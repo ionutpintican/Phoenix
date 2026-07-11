@@ -1,0 +1,15 @@
+*.iml
+.gradle/
+.gradle-home/
+.kotlin/
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+app/build/
+
+# Internal PRD / design doc — not for the public repo
+/Reconstruct Phoenix then compare with PRD file.docx

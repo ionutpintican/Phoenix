@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple music note glyph, centered in the adaptive-icon safe zone. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M63,34 L63,64 C63,68.4 59.4,72 55,72 C50.6,72 47,68.4 47,64 C47,59.6 50.6,56 55,56 C56.5,56 57.9,56.4 59,57.1 L59,42 L45,45 L45,68 C45,72.4 41.4,76 37,76 C32.6,76 29,72.4 29,68 C29,63.6 32.6,60 37,60 C38.5,60 39.9,60.4 41,61.1 L41,38 L63,34 Z" />
+</vector>
