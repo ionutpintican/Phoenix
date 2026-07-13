@@ -74,8 +74,13 @@ fun RadioScreen(
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
 
-            // Phone Radio bar: letters only (you're already on the radio view).
-            LetterShortcutBar(onGoToFolder = onGoToFolder, revision = revision)
+            // Phone Radio bar: keep the Radio button visible for parity with the other
+            // screens (it's a no-op here since you're already on the radio view).
+            LetterShortcutBar(
+                onGoToFolder = onGoToFolder,
+                showRadioButton = true,
+                revision = revision,
+            )
 
             OutlinedTextField(
                 value = query,

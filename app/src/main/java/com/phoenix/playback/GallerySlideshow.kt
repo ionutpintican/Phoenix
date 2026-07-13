@@ -24,17 +24,27 @@ class GallerySlideshow {
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(MediaStore.Images.Media._ID)
         val out = ArrayList<Uri>()
-        context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            while (c.moveToNext()) {
-                out += ContentUris.withAppendedId(collection, c.getLong(idCol))
+        // Tolerate a missing/partial Images grant: the query throws SecurityException when the
+        // permission isn't held. Swallow it and leave the pool empty — a later grant triggers a
+        // reload (see PlaybackService), rather than crashing the loader coroutine.
+        runCatching {
+            context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                while (c.moveToNext()) {
+                    out += ContentUris.withAppendedId(collection, c.getLong(idCol))
+                }
             }
         }
-        photos = out
-        reshuffle()
+        // Swap in the new pool atomically: load() runs on IO while next() reads on Main, so
+        // publish photos + order together to avoid handing out a stale index into an old list.
+        synchronized(this) {
+            photos = out
+            reshuffle()
+        }
     }
 
     /** The next random photo, or null if there are none. */
+    @Synchronized
     fun next(): Uri? {
         if (photos.isEmpty()) return null
         if (cursor >= order.size) reshuffle()

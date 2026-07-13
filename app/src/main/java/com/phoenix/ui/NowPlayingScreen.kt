@@ -1,6 +1,7 @@
 package com.phoenix.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +55,7 @@ fun NowPlayingScreen(
     val playing by vm.isPlaying.collectAsState()
     val shuffle by vm.shuffle.collectAsState()
     val mediaId by vm.currentMediaId.collectAsState()
+    val artworkUri by vm.artwork.collectAsState()
     val favorites by RadioFavorites.favorites.collectAsState()
 
     val isRadio = mediaId?.startsWith("radio:") == true
@@ -73,19 +76,32 @@ fun NowPlayingScreen(
                 revision = revision,
             )
 
-            // Large artwork placeholder (a lightweight build with no image-loading library).
+            // Album art / radio favicon for the current track. The playback service rotates
+            // this URI — the track's own artwork first, then gallery photos — so this view
+            // follows that slideshow. Falls back to a music-note placeholder while nothing has
+            // loaded (or when the image can't be decoded).
+            val artwork = rememberArtwork(artworkUri)
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth(0.8f).aspectRatio(1f),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Filled.MusicNote,
-                        contentDescription = null,
-                        modifier = Modifier.size(96.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (artwork != null) {
+                        Image(
+                            bitmap = artwork,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.MusicNote,
+                            contentDescription = null,
+                            modifier = Modifier.size(96.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 

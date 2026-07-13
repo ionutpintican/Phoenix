@@ -1,21 +1,26 @@
 package com.phoenix.ui
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -29,6 +34,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +54,13 @@ fun BrowseScreen(
     onGoToFolder: (String) -> Unit,
 ) {
     val revision by MusicLibrary.revision.collectAsState()
+    // The folder song list is sorted by the global sort mode, so recompute it when that
+    // changes — otherwise tapping a sort button only re-highlights the rail while the visible
+    // list keeps its stale order.
+    val sortMode by MusicLibrary.sortMode.collectAsState()
+    // Shuffle is a single shared player state (same toggle the now-playing screen and the car
+    // use). Surfacing it here lets the user pick order before playing from the browsed list.
+    val shuffle by vm.shuffle.collectAsState()
     val context = LocalContext.current
 
     BackHandler(enabled = openFolder != null) { onBackToRoot() }
@@ -74,6 +88,13 @@ fun BrowseScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = { vm.toggleShuffle() }) {
+                    Icon(
+                        Icons.Filled.Shuffle,
+                        contentDescription = if (shuffle) "Shuffle on" else "Shuffle off",
+                        tint = if (shuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 IconButton(onClick = { thread { MusicLibrary.rescan(context) } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
                 }
@@ -91,13 +112,13 @@ fun BrowseScreen(
                     }
                 }
             } else {
-                val tracks = remember(revision, openFolder) { MusicLibrary.tracksInFolder(openFolder) }
+                val tracks = remember(revision, openFolder, sortMode) { MusicLibrary.tracksInFolder(openFolder) }
                 LazyColumn(Modifier.fillMaxSize()) {
                     itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
                         ListItem(
                             headlineContent = { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             supportingContent = { track.artist?.let { Text(it, maxLines = 1) } },
-                            leadingContent = { Icon(Icons.Filled.MusicNote, contentDescription = null) },
+                            leadingContent = { TrackArtwork(track.albumArtUri) },
                             modifier = Modifier.fillMaxWidth().clickableRow {
                                 vm.playTracks(tracks, index)
                                 onOpenNowPlaying()
@@ -107,6 +128,22 @@ fun BrowseScreen(
                 }
             }
         }
+    }
+}
+
+/** A track's album art thumbnail, falling back to the music-note icon when it can't load. */
+@Composable
+private fun TrackArtwork(uri: Uri?) {
+    val art = rememberArtwork(uri)
+    if (art != null) {
+        Image(
+            bitmap = art,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(4.dp)),
+        )
+    } else {
+        Icon(Icons.Filled.MusicNote, contentDescription = null)
     }
 }
 

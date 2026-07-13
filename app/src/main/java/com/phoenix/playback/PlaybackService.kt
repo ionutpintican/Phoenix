@@ -26,6 +26,7 @@ import com.phoenix.radio.RadioFavorites
 import com.phoenix.radio.RadioStation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -48,6 +49,21 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaLibrarySession
 
+    /**
+     * A second engine used only to play the *outgoing* song's tail during a crossfade, so its
+     * fade-out can overlap the next song's fade-in. It never owns the queue or audio focus —
+     * [player] stays the single source of truth the phone and car both observe.
+     */
+    private lateinit var crossfadePlayer: ExoPlayer
+
+    // ---- Crossfade state (only ever touched on the main thread) ----
+    private var crossfading = false
+    private var crossfadeJob: Job? = null
+
+    /** Set right before our own [ExoPlayer.seekToNextMediaItem] so the transition listener
+     *  can tell the crossfade's own queue advance apart from a user skip. */
+    private var selfCrossfadeTransition = false
+
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val browseExecutor = Executors.newSingleThreadExecutor()
@@ -59,6 +75,9 @@ class PlaybackService : MediaLibraryService() {
 
     private var lastSearchQuery: String = ""
     private var lastSearchItems: List<MediaItem> = emptyList()
+
+    /** Mirrors the player's shuffle mode so browse tiles (built off the main thread) can read it. */
+    @Volatile private var shuffleOn: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -79,6 +98,18 @@ class PlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
+        // The crossfade engine mirrors the main player's audio output but must NOT handle audio
+        // focus (that's [player]'s job) or the becoming-noisy event, or the two would fight.
+        crossfadePlayer = ExoPlayer.Builder(this)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ false,
+            )
+            .build()
+
         val sessionActivity = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -93,6 +124,30 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 session.setCustomLayout(buildCustomLayout())
+                if (selfCrossfadeTransition) {
+                    // Our own 5s-early advance — leave the running crossfade alone.
+                    selfCrossfadeTransition = false
+                } else {
+                    // Any other transition (user skip, or a natural advance when no crossfade
+                    // ran) must not leave P1 half-faded or P2 playing a stale tail.
+                    cancelCrossfade()
+                }
+            }
+
+            // Keep the outgoing tail in lock-step with the user pausing/resuming mid-crossfade.
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (crossfading) crossfadePlayer.playWhenReady = isPlaying
+            }
+
+            // Shuffle can be toggled from the phone, this service's browse tile, or Auto's
+            // now-playing template. Mirror it and re-list the song views so their "Shuffle:
+            // On/Off" tile reflects the shared state wherever it was changed.
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                shuffleOn = shuffleModeEnabled
+                session.notifyChildrenChanged(TAB_PLAYLISTS, Int.MAX_VALUE, null)
+                MusicLibrary.browsableFolderIds().forEach {
+                    session.notifyChildrenChanged("folder:$it", Int.MAX_VALUE, null)
+                }
             }
         })
 
@@ -115,7 +170,20 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
+        // Reload the car slideshow whenever the library is (re)scanned. The onCreate load
+        // above runs at service start, which races the phone's Images permission dialog and
+        // usually loses (empty pool). The phone re-runs MusicLibrary.load() right after the
+        // grant (and on manual rescans), bumping revision — reload the gallery photos then so
+        // a late-granted permission actually populates the slideshow instead of leaving it
+        // empty for the life of the process.
+        mainScope.launch {
+            MusicLibrary.revision.drop(1).collect {
+                ioScope.launch { slideshow.load(this@PlaybackService) }
+            }
+        }
+
         startSlideshowLoop()
+        startCrossfadeMonitor()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
@@ -126,26 +194,141 @@ class PlaybackService : MediaLibraryService() {
         browseExecutor.shutdown()
         session.release()
         player.release()
+        crossfadePlayer.release()
         super.onDestroy()
+    }
+
+    // ---- Crossfade ------------------------------------------------------------
+
+    /**
+     * Polls the main player near the end of each song and kicks off a crossfade. Runs on the
+     * main thread (all player access must). Cheap: a duration check every 200ms.
+     */
+    private fun startCrossfadeMonitor() {
+        mainScope.launch {
+            while (isActive) {
+                delay(CROSSFADE_POLL_MS)
+                maybeStartCrossfade()
+            }
+        }
+    }
+
+    private fun maybeStartCrossfade() {
+        if (crossfading || !player.isPlaying || !player.hasNextMediaItem()) return
+        // Songs only. Radio is live (no real duration) and must not crossfade.
+        val current = player.currentMediaItem ?: return
+        if (current.mediaId.startsWith("radio:")) return
+        val nextIndex = player.nextMediaItemIndex
+        if (nextIndex == C.INDEX_UNSET || player.getMediaItemAt(nextIndex).mediaId.startsWith("radio:")) return
+
+        val duration = player.duration
+        if (duration == C.TIME_UNSET || duration <= 0) return
+        val remaining = duration - player.currentPosition
+        // A song shorter than the crossfade window still crossfades once, right at its start's tail.
+        if (remaining in 1..CROSSFADE_MS) startCrossfade(current)
+    }
+
+    private fun startCrossfade(outgoing: MediaItem) {
+        val uri = outgoing.localConfiguration?.uri ?: return
+        val outgoingPosition = player.currentPosition
+        crossfading = true
+
+        // P2 picks the outgoing song up where P1 leaves it, at full volume, and will fade down.
+        crossfadePlayer.setMediaItem(MediaItem.fromUri(uri))
+        crossfadePlayer.prepare()
+        crossfadePlayer.seekTo(outgoingPosition)
+        crossfadePlayer.volume = 1f
+        crossfadePlayer.playWhenReady = true
+
+        // P1 jumps to the next song now (up to 5s early), silent, and fades up. The queue and
+        // now-playing metadata flip here — that's the leading edge of the crossfade.
+        selfCrossfadeTransition = true
+        player.volume = 0f
+        player.seekToNextMediaItem()
+
+        crossfadeJob = mainScope.launch {
+            val steps = (CROSSFADE_MS / CROSSFADE_TICK_MS).toInt()
+            for (i in 1..steps) {
+                delay(CROSSFADE_TICK_MS)
+                val fraction = i.toFloat() / steps
+                player.volume = fraction            // incoming fades in
+                crossfadePlayer.volume = 1f - fraction  // outgoing fades out
+            }
+            finishCrossfade()
+        }
+    }
+
+    /** Restore full volume on P1 and tear down P2. Safe to call whether or not a fade is running. */
+    private fun finishCrossfade() {
+        crossfadeJob = null
+        crossfading = false
+        player.volume = 1f
+        crossfadePlayer.volume = 0f
+        crossfadePlayer.stop()
+        crossfadePlayer.clearMediaItems()
+    }
+
+    /** Abort an in-flight crossfade (a manual skip landed mid-fade). */
+    private fun cancelCrossfade() {
+        if (!crossfading) return
+        crossfadeJob?.cancel()
+        finishCrossfade()
     }
 
     // ---- Car now-playing artwork slideshow -----------------------------------
 
+    /** The media item the slideshow is currently cycling for — detects track changes. */
+    @Volatile private var slideshowMediaId: String? = null
+
+    /**
+     * The now-playing artwork slideshow. Each track *leads* with its own artwork — the album
+     * pic for a local song, the station favicon for radio — and only then rotates into random
+     * gallery photos. When the track changes we restore its real artwork first (a prior photo
+     * may have overwritten this queue slot) and hold it for one interval before the photos
+     * resume. With no gallery photos the real artwork simply stays up.
+     */
     private fun startSlideshowLoop() {
         mainScope.launch {
             while (isActive) {
                 delay(SLIDESHOW_INTERVAL_MS)
-                val photo = slideshow.next() ?: continue
                 if (!player.isPlaying) continue
                 val idx = player.currentMediaItemIndex
                 val item = player.currentMediaItem ?: continue
-                // Same media URI, new artwork → metadata update without interrupting audio.
-                val updated = item.buildUpon()
-                    .setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(photo).build())
-                    .build()
-                player.replaceMediaItem(idx, updated)
+
+                if (item.mediaId != slideshowMediaId) {
+                    // New track: show its own album art / station artwork before any photo.
+                    slideshowMediaId = item.mediaId
+                    val original = originalArtworkFor(item)
+                    if (item.mediaMetadata.artworkUri != original) {
+                        setArtwork(idx, item, original)
+                    }
+                    continue
+                }
+
+                val photo = slideshow.next() ?: continue
+                setArtwork(idx, item, photo)
             }
         }
+    }
+
+    /** The track's own artwork (album pic or station favicon), independent of any slideshow photo. */
+    private fun originalArtworkFor(item: MediaItem): Uri? {
+        val id = item.mediaId
+        return when {
+            id.startsWith("song:") -> MusicLibrary.getTrackByMediaId(id)?.albumArtUri
+            id.startsWith("radio:") ->
+                RadioBrowser.stationByMediaId(id, RadioFavorites.favorites.value)
+                    ?.favicon?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            else -> null
+        }
+    }
+
+    /** Swap only the artwork of the item at [idx] — same media URI, no audio interruption. */
+    private fun setArtwork(idx: Int, item: MediaItem, artwork: Uri?) {
+        val updated = item.buildUpon()
+            .setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(artwork).build())
+            .build()
+        player.replaceMediaItem(idx, updated)
     }
 
     // ---- Browse tree ----------------------------------------------------------
@@ -161,6 +344,7 @@ class PlaybackService : MediaLibraryService() {
                 .apply {
                     carShortcuts.forEach { add(SessionCommand(ACTION_SHORTCUT_PREFIX + it.letter, Bundle.EMPTY)) }
                     add(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
+                    add(SessionCommand(ACTION_PLAY_RADIO, Bundle.EMPTY))
                 }
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -184,6 +368,15 @@ class PlaybackService : MediaLibraryService() {
                 }
                 action == ACTION_TOGGLE_FAVORITE -> {
                     toggleCurrentFavorite()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                action == ACTION_PLAY_RADIO -> {
+                    // Switch playback to the radio list (favorites first). browseStations touches
+                    // the network, so resolve on IO and hop back to Main to drive the player.
+                    ioScope.launch {
+                        val stations = RadioBrowser.browseStations(RadioFavorites.favorites.value)
+                        mainScope.launch { playRadio(stations) }
+                    }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
             }
@@ -249,6 +442,14 @@ class PlaybackService : MediaLibraryService() {
                 parentId.startsWith(CMD_SORT_PREFIX) -> {
                     val (mode, target) = parseSortCommand(parentId)
                     MusicLibrary.setSortMode(mode)
+                    lastBrowsedParent = target
+                    childrenForTarget(target)
+                }
+                parentId.startsWith(CMD_SHUFFLE_PREFIX) -> {
+                    // Flip the shared shuffle mode on the main thread (player is main-only). The
+                    // shuffle listener re-lists this node, so the returned tile updates to match.
+                    val target = parentId.substringAfter('|')
+                    mainScope.launch { player.shuffleModeEnabled = !player.shuffleModeEnabled }
                     lastBrowsedParent = target
                     childrenForTarget(target)
                 }
@@ -346,7 +547,7 @@ class PlaybackService : MediaLibraryService() {
         RadioBrowser.browseStations(favs).forEach { add(radioItem(it)) }
     }
 
-    /** Song list preceded by the row of four sort tiles (car-only sort control). */
+    /** Song list preceded by the row of four sort tiles + the shuffle toggle (car-only controls). */
     private fun songListWithSortTiles(parentBrowseId: String, tracks: List<Track>): List<MediaItem> =
         buildList {
             if (tracks.isNotEmpty()) {
@@ -354,6 +555,7 @@ class PlaybackService : MediaLibraryService() {
                 add(sortTile(MusicLibrary.SortMode.DATE_DESC, parentBrowseId))
                 add(sortTile(MusicLibrary.SortMode.NAME_ASC, parentBrowseId))
                 add(sortTile(MusicLibrary.SortMode.NAME_DESC, parentBrowseId))
+                add(shuffleTile(parentBrowseId))
             }
             addAll(tracks.map { songItem(it) })
         }
@@ -386,6 +588,17 @@ class PlaybackService : MediaLibraryService() {
         // L/A/H/Au and Radio tiles. Browsable so tapping re-enters onGetChildren, applies
         // the sort, and re-lists the current folder.
         return browsableTextTile("$CMD_SORT_PREFIX|${mode.name}|$parentBrowseId", label, styleExtras(true, false))
+    }
+
+    /**
+     * The car's shuffle toggle, shown atop each folder's song list. Browsable so tapping
+     * re-enters onGetChildren, flips the shared shuffle mode, and re-lists the folder with the
+     * label updated. When off the list plays in the current sort order; when on, ExoPlayer
+     * shuffles playback of the same queue.
+     */
+    private fun shuffleTile(parentBrowseId: String): MediaItem {
+        val label = if (shuffleOn) "Shuffle: On" else "Shuffle: Off"
+        return browsableTextTile("$CMD_SHUFFLE_PREFIX|$parentBrowseId", label, styleExtras(true, false))
     }
 
     // ---- Playback resolution --------------------------------------------------
@@ -436,6 +649,13 @@ class PlaybackService : MediaLibraryService() {
         player.play()
     }
 
+    private fun playRadio(stations: List<RadioStation>) {
+        if (stations.isEmpty()) return
+        player.setMediaItems(stations.map { radioItem(it) })
+        player.prepare()
+        player.play()
+    }
+
     private fun toggleCurrentFavorite() {
         val id = player.currentMediaItem?.mediaId ?: return
         if (!id.startsWith("radio:")) return
@@ -478,9 +698,21 @@ class PlaybackService : MediaLibraryService() {
             buttons += CommandButton.Builder()
                 .setDisplayName(s.letter)
                 .setIconResId(s.iconRes)
+                // Also hand Auto an android.resource:// URI for the same drawable. The head
+                // unit resolves the icon itself from this URI (no cross-process resId lookup),
+                // which is what keeps the letter glyph from degrading to the "!" placeholder.
+                .setIconUri(resourceUri(s.iconRes))
                 .setSessionCommand(SessionCommand(ACTION_SHORTCUT_PREFIX + s.letter, Bundle.EMPTY))
                 .build()
         }
+        // Radio always available in the now-playing controls, mirroring the phone's Radio
+        // button. Tapping switches playback to the radio list (favorites first).
+        buttons += CommandButton.Builder()
+            .setDisplayName("Radio")
+            .setIconResId(R.drawable.ic_radio)
+            .setIconUri(resourceUri(R.drawable.ic_radio))
+            .setSessionCommand(SessionCommand(ACTION_PLAY_RADIO, Bundle.EMPTY))
+            .build()
         return ImmutableList.copyOf(buttons)
     }
 
@@ -595,11 +827,18 @@ class PlaybackService : MediaLibraryService() {
         const val TAB_RADIO = "tab_radio"
         const val ID_SHUFFLE_ALL = "cmd:shuffle_all"
         const val CMD_SORT_PREFIX = "cmd:sort"
+        const val CMD_SHUFFLE_PREFIX = "cmd:shuffle_toggle"
         const val CMD_SHORTCUT_PREFIX = "cmd:shortcut"
 
         const val ACTION_SHORTCUT_PREFIX = "com.phoenix.SHORTCUT."
         const val ACTION_TOGGLE_FAVORITE = "com.phoenix.TOGGLE_FAVORITE"
+        const val ACTION_PLAY_RADIO = "com.phoenix.PLAY_RADIO"
 
         const val SLIDESHOW_INTERVAL_MS = 12_000L
+
+        /** Crossfade length between songs, and the fade/poll granularity. */
+        const val CROSSFADE_MS = 5_000L
+        const val CROSSFADE_TICK_MS = 50L
+        const val CROSSFADE_POLL_MS = 200L
     }
 }
