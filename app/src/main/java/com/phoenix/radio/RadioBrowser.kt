@@ -43,10 +43,12 @@ object RadioBrowser {
         return stations
     }
 
-    /** Browse ordering: favorites first, then the top stations, de-duplicated. */
+    /** Browse ordering: favorites first, then the top stations, de-duplicated. De-dupe by stream
+     *  URL (not uuid) so a seeded favorite and its top-list twin — which carry different ids —
+     *  collapse to the single favorite entry. */
     fun browseStations(favorites: List<RadioStation>): List<RadioStation> {
         val rest = topStations()
-        val merged = (favorites + rest).distinctBy { it.uuid }
+        val merged = (favorites + rest).distinctBy { it.streamUrl.ifBlank { it.uuid } }
         lastBrowse = merged
         return merged
     }
