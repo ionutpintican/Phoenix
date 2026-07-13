@@ -234,14 +234,16 @@ class PlaybackService : MediaLibraryService() {
         if (remaining in 1..CROSSFADE_MS) startCrossfade(current)
     }
 
-    /** Load the outgoing song into P2 and park it (paused, silent) at the fade-start position so
-     *  the buffer is warm before [startCrossfade] fires. */
+    /** Load the outgoing song into P2 and park it (paused, silent) a little *before* the fade-start
+     *  position, so the region straddling the fade start is fully decoded ahead of time. Parking
+     *  exactly on the fade start left the fire-time alignment seek landing at the edge of the
+     *  buffer, which is what made the hand-off audible; the lead-in keeps that seek mid-buffer. */
     private fun armCrossfade(outgoing: MediaItem, duration: Long) {
         val uri = outgoing.localConfiguration?.uri ?: return
         crossfadeArmed = true
         crossfadePlayer.setMediaItem(MediaItem.fromUri(uri))
         crossfadePlayer.prepare()
-        crossfadePlayer.seekTo((duration - CROSSFADE_MS).coerceAtLeast(0))
+        crossfadePlayer.seekTo((duration - CROSSFADE_MS - CROSSFADE_LEADIN_MS).coerceAtLeast(0))
         crossfadePlayer.volume = 0f
         crossfadePlayer.playWhenReady = false
     }
@@ -525,7 +527,9 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: MutableList<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> = supply {
-            resolveForPlayback(mediaItems).first.toMutableList()
+            MusicLibrary.ensureLoaded(this@PlaybackService)
+            if (mediaItems.size > 1) mediaItems.map { resolvePlayableItem(it) }.toMutableList()
+            else resolveForPlayback(mediaItems).first.toMutableList()
         }
 
         override fun onSetMediaItems(
@@ -535,8 +539,36 @@ class PlaybackService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = supply {
-            val (items, index) = resolveForPlayback(mediaItems)
-            MediaSession.MediaItemsWithStartPosition(items, index, C.TIME_UNSET)
+            MusicLibrary.ensureLoaded(this@PlaybackService)
+            if (mediaItems.size > 1) {
+                // A fully-built queue from the phone UI. A controller can't carry local URIs to
+                // the session, so re-attach each item's URI from its media id — but keep the
+                // caller's exact order and start index instead of collapsing to the first item's
+                // folder (which is what made a tapped search/browse result play the wrong song).
+                val resolved = mediaItems.map { resolvePlayableItem(it) }
+                MediaSession.MediaItemsWithStartPosition(
+                    resolved,
+                    startIndex.coerceIn(0, resolved.lastIndex),
+                    startPositionMs.coerceAtLeast(0),
+                )
+            } else {
+                // A single tapped browse item (the car) — expand it into its full queue at the
+                // right index (e.g. a folder, a letter shortcut, or one song within its folder).
+                val (items, index) = resolveForPlayback(mediaItems)
+                MediaSession.MediaItemsWithStartPosition(items, index, C.TIME_UNSET)
+            }
+        }
+    }
+
+    /** Re-attach a playable URI to a controller-sent item by resolving its media id (a controller
+     *  can't send local content URIs across the session, only ids + metadata). */
+    private fun resolvePlayableItem(item: MediaItem): MediaItem {
+        val id = item.mediaId
+        return when {
+            id.startsWith("song:") -> MusicLibrary.getTrackByMediaId(id)?.let { songItem(it) } ?: item
+            id.startsWith("radio:") ->
+                RadioBrowser.stationByMediaId(id, RadioFavorites.favorites.value)?.let { radioItem(it) } ?: item
+            else -> item
         }
     }
 
@@ -812,5 +844,9 @@ class PlaybackService : MediaLibraryService() {
         /** How far ahead of the fade to pre-buffer the outgoing tail into P2 (removes the stall).
          *  Generous lead so P2 is fully buffered and parked well before the fade fires. */
         const val CROSSFADE_PRELOAD_MS = 4_000L
+
+        /** How far *before* the fade-start to park P2, so the region around the fade start is
+         *  already decoded and the fire-time alignment seek lands mid-buffer (click-free start). */
+        const val CROSSFADE_LEADIN_MS = 700L
     }
 }
