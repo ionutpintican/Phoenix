@@ -2,6 +2,7 @@ package com.phoenix.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -9,12 +10,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Radio
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,28 +45,21 @@ fun RadioScreen(
     onOpenNowPlaying: () -> Unit,
     onBack: () -> Unit,
     onGoToFolder: (String) -> Unit,
+    onOpenSearch: (Boolean) -> Unit,
 ) {
     val revision by MusicLibrary.revision.collectAsState()
     val favorites by RadioFavorites.favorites.collectAsState()
 
-    var query by remember { mutableStateOf("") }
     var stations by remember { mutableStateOf<List<RadioStation>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
 
     BackHandler { onBack() }
 
-    // Favorites-first when browsing; scoped to radio when searching. Re-runs on query/favorites.
-    LaunchedEffect(query, favorites) {
+    // The browse list: favorites first, then the top stations. Searching is done through the
+    // search icon (which opens the shared search screen in radio mode).
+    LaunchedEffect(favorites) {
         loading = true
-        stations = withContext(Dispatchers.IO) {
-            if (query.isBlank()) {
-                RadioBrowser.browseStations(favorites)
-            } else {
-                val results = RadioBrowser.search(query)
-                (favorites.filter { it.name.contains(query, ignoreCase = true) } + results)
-                    .distinctBy { it.uuid }
-            }
-        }
+        stations = withContext(Dispatchers.IO) { RadioBrowser.browseStations(favorites) }
         loading = false
     }
 
@@ -74,20 +68,21 @@ fun RadioScreen(
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
 
-            // Phone Radio bar: keep the Radio button visible for parity with the other
-            // screens (it's a no-op here since you're already on the radio view).
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Radio", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onOpenSearch(true) }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search stations")
+                }
+            }
+
+            // Phone Radio bar: keep the Radio button visible for parity with the other screens.
             LetterShortcutBar(
                 onGoToFolder = onGoToFolder,
                 showRadioButton = true,
                 revision = revision,
-            )
-
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                label = { Text("Search stations") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
 
             if (loading) {

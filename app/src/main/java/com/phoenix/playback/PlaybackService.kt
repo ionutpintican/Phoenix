@@ -60,6 +60,10 @@ class PlaybackService : MediaLibraryService() {
     private var crossfading = false
     private var crossfadeJob: Job? = null
 
+    /** True once [crossfadePlayer] has been pre-buffered with the current song's tail, so the
+     *  fade can start instantly instead of stalling ~1s while the file loads and seeks. */
+    private var crossfadeArmed = false
+
     /** Set right before our own [ExoPlayer.seekToNextMediaItem] so the transition listener
      *  can tell the crossfade's own queue advance apart from a user skip. */
     private var selfCrossfadeTransition = false
@@ -70,14 +74,13 @@ class PlaybackService : MediaLibraryService() {
 
     private val slideshow = GallerySlideshow()
 
-    /** The last node the user browsed on the car — used to scope Auto's global search. */
+    /** The list the user is currently viewing on the car — the Radio tab vs. a music view — used
+     *  to scope Auto's one global search box. The *displayed* list decides the corpus, not what
+     *  happens to be playing. */
     @Volatile private var lastBrowsedParent: String = ID_ROOT
 
     private var lastSearchQuery: String = ""
     private var lastSearchItems: List<MediaItem> = emptyList()
-
-    /** Mirrors the player's shuffle mode so browse tiles (built off the main thread) can read it. */
-    @Volatile private var shuffleOn: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -129,8 +132,9 @@ class PlaybackService : MediaLibraryService() {
                     selfCrossfadeTransition = false
                 } else {
                     // Any other transition (user skip, or a natural advance when no crossfade
-                    // ran) must not leave P1 half-faded or P2 playing a stale tail.
+                    // ran) must not leave P1 half-faded or P2 playing/holding a stale tail.
                     cancelCrossfade()
+                    if (crossfadeArmed) disarmCrossfade()
                 }
             }
 
@@ -138,24 +142,12 @@ class PlaybackService : MediaLibraryService() {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (crossfading) crossfadePlayer.playWhenReady = isPlaying
             }
-
-            // Shuffle can be toggled from the phone, this service's browse tile, or Auto's
-            // now-playing template. Mirror it and re-list the song views so their "Shuffle:
-            // On/Off" tile reflects the shared state wherever it was changed.
-            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                shuffleOn = shuffleModeEnabled
-                session.notifyChildrenChanged(TAB_PLAYLISTS, Int.MAX_VALUE, null)
-                MusicLibrary.browsableFolderIds().forEach {
-                    session.notifyChildrenChanged("folder:$it", Int.MAX_VALUE, null)
-                }
-            }
         })
 
-        // Live Android Auto refresh when the sort changes on the phone.
+        // Live Android Auto refresh when the sort changes on the phone: re-fetch every folder's
+        // song list so a connected car reflects the new order.
         mainScope.launch {
             MusicLibrary.sortMode.drop(1).collect {
-                // Re-fetch every browsable song list so a connected car reflects the new order.
-                session.notifyChildrenChanged(TAB_PLAYLISTS, Int.MAX_VALUE, null)
                 MusicLibrary.browsableFolderIds().forEach {
                     session.notifyChildrenChanged("folder:$it", Int.MAX_VALUE, null)
                 }
@@ -214,7 +206,11 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun maybeStartCrossfade() {
-        if (crossfading || !player.isPlaying || !player.hasNextMediaItem()) return
+        if (crossfading || !player.isPlaying || !player.hasNextMediaItem()) {
+            // Not eligible right now — drop any preload we armed for a song we've since left.
+            if (crossfadeArmed && !crossfading) disarmCrossfade()
+            return
+        }
         // Songs only. Radio is live (no real duration) and must not crossfade.
         val current = player.currentMediaItem ?: return
         if (current.mediaId.startsWith("radio:")) return
@@ -224,24 +220,59 @@ class PlaybackService : MediaLibraryService() {
         val duration = player.duration
         if (duration == C.TIME_UNSET || duration <= 0) return
         val remaining = duration - player.currentPosition
+
+        // Pre-buffer the outgoing tail into P2 a few seconds ahead of the fade so firing is
+        // instant (no ~1s load/seek stall). Disarm again if the user seeks back out of range.
+        when {
+            !crossfadeArmed && remaining in (CROSSFADE_MS + 1)..(CROSSFADE_MS + CROSSFADE_PRELOAD_MS) ->
+                armCrossfade(current, duration)
+            crossfadeArmed && remaining > CROSSFADE_MS + CROSSFADE_PRELOAD_MS ->
+                disarmCrossfade()
+        }
+
         // A song shorter than the crossfade window still crossfades once, right at its start's tail.
         if (remaining in 1..CROSSFADE_MS) startCrossfade(current)
     }
 
-    private fun startCrossfade(outgoing: MediaItem) {
+    /** Load the outgoing song into P2 and park it (paused, silent) at the fade-start position so
+     *  the buffer is warm before [startCrossfade] fires. */
+    private fun armCrossfade(outgoing: MediaItem, duration: Long) {
         val uri = outgoing.localConfiguration?.uri ?: return
-        val outgoingPosition = player.currentPosition
-        crossfading = true
-
-        // P2 picks the outgoing song up where P1 leaves it, at full volume, and will fade down.
+        crossfadeArmed = true
         crossfadePlayer.setMediaItem(MediaItem.fromUri(uri))
         crossfadePlayer.prepare()
-        crossfadePlayer.seekTo(outgoingPosition)
+        crossfadePlayer.seekTo((duration - CROSSFADE_MS).coerceAtLeast(0))
+        crossfadePlayer.volume = 0f
+        crossfadePlayer.playWhenReady = false
+    }
+
+    /** Throw away an armed-but-unused preload (user seeked away, skipped, or paused out of range). */
+    private fun disarmCrossfade() {
+        crossfadeArmed = false
+        crossfadePlayer.playWhenReady = false
+        crossfadePlayer.stop()
+        crossfadePlayer.clearMediaItems()
+    }
+
+    private fun startCrossfade(outgoing: MediaItem) {
+        val uri = outgoing.localConfiguration?.uri ?: return
+        crossfading = true
+
+        if (!crossfadeArmed) {
+            // Not pre-buffered (e.g. a song shorter than the preload window) — load P2 now.
+            crossfadePlayer.setMediaItem(MediaItem.fromUri(uri))
+            crossfadePlayer.prepare()
+        }
+        // P2 picks the outgoing song up exactly where P1 is (a fast in-buffer seek when armed),
+        // at full volume, and will fade down.
+        crossfadePlayer.seekTo(player.currentPosition)
         crossfadePlayer.volume = 1f
         crossfadePlayer.playWhenReady = true
+        crossfadeArmed = false
 
-        // P1 jumps to the next song now (up to 5s early), silent, and fades up. The queue and
-        // now-playing metadata flip here — that's the leading edge of the crossfade.
+        // P1 jumps to the next song now (a fraction of a second early), silent, and fades up.
+        // ExoPlayer keeps the next window pre-buffered, so this advance is gapless. The queue
+        // and now-playing metadata flip here — that's the leading edge of the crossfade.
         selfCrossfadeTransition = true
         player.volume = 0f
         player.seekToNextMediaItem()
@@ -251,8 +282,12 @@ class PlaybackService : MediaLibraryService() {
             for (i in 1..steps) {
                 delay(CROSSFADE_TICK_MS)
                 val fraction = i.toFloat() / steps
-                player.volume = fraction            // incoming fades in
-                crossfadePlayer.volume = 1f - fraction  // outgoing fades out
+                // Equal-power (constant-loudness) curve: sin²+cos²=1, so the two songs sum to a
+                // steady perceived level through the dissolve instead of the mid-point dip a
+                // linear fade gives.
+                val angle = fraction * (Math.PI.toFloat() / 2f)
+                player.volume = kotlin.math.sin(angle)             // incoming fades in
+                crossfadePlayer.volume = kotlin.math.cos(angle)    // outgoing fades out
             }
             finishCrossfade()
         }
@@ -262,6 +297,7 @@ class PlaybackService : MediaLibraryService() {
     private fun finishCrossfade() {
         crossfadeJob = null
         crossfading = false
+        crossfadeArmed = false
         player.volume = 1f
         crossfadePlayer.volume = 0f
         crossfadePlayer.stop()
@@ -389,9 +425,7 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> = Futures.immediateFuture(
             LibraryResult.ofItem(
-                // playableGrid=true so the root-level letter tiles render as a row of tiles
-                // alongside the Playlists / All Songs / Radio tabs.
-                browsableItem(ID_ROOT, "Phoenix", null, styleExtras(browsableGrid = true, playableGrid = true)),
+                browsableItem(ID_ROOT, "Phoenix", null, styleExtras()),
                 params,
             )
         )
@@ -436,27 +470,23 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = supply {
             MusicLibrary.ensureLoaded(this@PlaybackService)
             val children: List<MediaItem> = when {
-                parentId == ID_ROOT -> rootTabs()
+                parentId == ID_ROOT -> {
+                    // Invalidate both tab subtrees whenever the tab strip is (re)shown, so opening
+                    // a tab always re-fires its onGetChildren and re-registers the search context.
+                    // Auto can otherwise serve a cached tab without re-calling us, leaving
+                    // lastBrowsedParent pointing at a stale view and search hitting the wrong corpus.
+                    mainScope.launch {
+                        session.notifyChildrenChanged(TAB_PLAYLISTS, Int.MAX_VALUE, null)
+                        session.notifyChildrenChanged(TAB_RADIO, Int.MAX_VALUE, null)
+                    }
+                    rootTabs()
+                }
                 parentId == TAB_PLAYLISTS -> { lastBrowsedParent = TAB_PLAYLISTS; playlistsTabChildren() }
                 parentId == TAB_RADIO -> { lastBrowsedParent = TAB_RADIO; radioTabChildren() }
-                parentId.startsWith(CMD_SORT_PREFIX) -> {
-                    val (mode, target) = parseSortCommand(parentId)
-                    MusicLibrary.setSortMode(mode)
-                    lastBrowsedParent = target
-                    childrenForTarget(target)
-                }
-                parentId.startsWith(CMD_SHUFFLE_PREFIX) -> {
-                    // Flip the shared shuffle mode on the main thread (player is main-only). The
-                    // shuffle listener re-lists this node, so the returned tile updates to match.
-                    val target = parentId.substringAfter('|')
-                    mainScope.launch { player.shuffleModeEnabled = !player.shuffleModeEnabled }
-                    lastBrowsedParent = target
-                    childrenForTarget(target)
-                }
                 parentId.startsWith("folder:") -> {
                     lastBrowsedParent = parentId
                     val fid = parentId.removePrefix("folder:")
-                    songListWithSortTiles(parentId, MusicLibrary.tracksInFolder(fid))
+                    folderSongList(MusicLibrary.tracksInFolder(fid))
                 }
                 else -> emptyList()
             }
@@ -512,93 +542,46 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- Child builders -------------------------------------------------------
 
+    /** Android Auto's root tab strip: just Playlists and Radio. No letter tiles here — keeping
+     *  them out is what removes Auto's overflow "More" tab (the letters now live inside each
+     *  folder's song list instead). */
     private fun rootTabs(): List<MediaItem> = buildList {
-        // The browsable tabs form Android Auto's root tab strip...
-        add(browsableItem(TAB_PLAYLISTS, "Playlists", null, styleExtras(true, true)))
-        add(browsableItem(TAB_RADIO, "Radio", null, styleExtras(true, true)))
-        // ...and the L/A/H/Au shortcuts sit at the same root level (as text tiles),
-        // reachable without first opening Playlists. Same shuffle-play behavior as elsewhere.
-        addAll(letterTiles())
+        add(browsableItem(TAB_PLAYLISTS, "Playlists", null, styleExtras()))
+        add(browsableItem(TAB_RADIO, "Radio", null, styleExtras()))
     }
 
     /**
-     * The shared shortcut row shown at the top of the Playlists and All Songs tabs:
-     * L / A / H / Au (shuffle-play the folder) plus a Radio tile (jumps to the Radio list).
-     * Mirrors the phone's LetterShortcutBar. The Radio tab omits its own Radio tile.
+     * The Playlists tab: the flat list of music folders, exactly the set the phone shows in its
+     * root "Folders" list. Tapping a folder browses into its song list.
      */
-    private fun shortcutRow(): List<MediaItem> = buildList {
-        addAll(letterTiles())
-        // Text tile (no icon) so "Radio" renders in the same template font as the tabs.
-        add(browsableTextTile(TAB_RADIO, "Radio", styleExtras(true, true)))
-    }
-
-    private fun playlistsTabChildren(): List<MediaItem> = buildList {
-        addAll(shortcutRow())
-        add(shuffleAllItem())
-        MusicLibrary.browseFolders().forEach { folder ->
-            add(browsableItem("folder:${folder.id}", folder.name, null, styleExtras(true, false)))
+    private fun playlistsTabChildren(): List<MediaItem> =
+        MusicLibrary.browseFolders().map { folder ->
+            browsableItem("folder:${folder.id}", folder.name, null, styleExtras())
         }
-    }
 
-    private fun radioTabChildren(): List<MediaItem> = buildList {
-        // No Radio tile here — you're already in Radio (matches the phone Radio bar).
-        addAll(letterTiles())
+    /** The Radio tab: favorites first, then the top stations — a plain vertical list. */
+    private fun radioTabChildren(): List<MediaItem> {
         val favs = RadioFavorites.favorites.value
-        RadioBrowser.browseStations(favs).forEach { add(radioItem(it)) }
+        return RadioBrowser.browseStations(favs).map { radioItem(it) }
     }
 
-    /** Song list preceded by the row of four sort tiles + the shuffle toggle (car-only controls). */
-    private fun songListWithSortTiles(parentBrowseId: String, tracks: List<Track>): List<MediaItem> =
-        buildList {
-            if (tracks.isNotEmpty()) {
-                add(sortTile(MusicLibrary.SortMode.DATE_ASC, parentBrowseId))
-                add(sortTile(MusicLibrary.SortMode.DATE_DESC, parentBrowseId))
-                add(sortTile(MusicLibrary.SortMode.NAME_ASC, parentBrowseId))
-                add(sortTile(MusicLibrary.SortMode.NAME_DESC, parentBrowseId))
-                add(shuffleTile(parentBrowseId))
-            }
-            addAll(tracks.map { songItem(it) })
-        }
-
-    private fun childrenForTarget(target: String): List<MediaItem> = when {
-        target.startsWith("folder:") ->
-            songListWithSortTiles(target, MusicLibrary.tracksInFolder(target.removePrefix("folder:")))
-        else -> emptyList()
+    /**
+     * A folder's song view (the back-target from now-playing): the favorite-playlist letter
+     * shortcuts (L / A / H / Au) first, then this folder's songs in the current sort order.
+     * Tapping a song plays this folder as a queue starting at it; tapping a letter shuffle-plays
+     * that shortcut's folder — same behavior as the phone's letter bar.
+     */
+    private fun folderSongList(tracks: List<Track>): List<MediaItem> = buildList {
+        addAll(letterTiles())
+        addAll(tracks.map { songItem(it) })
     }
 
     private fun letterTiles(): List<MediaItem> = carShortcuts.mapNotNull { s ->
         // A letter whose folder isn't on the device is hidden.
         // The letter is the TITLE text (not a drawn glyph) so it renders in the same
-        // template font as the Playlists / Radio tab labels. Folder name is the subtitle.
+        // template font as the song rows. Folder name is the subtitle.
         if (MusicLibrary.folderIdByName(s.folderName) == null) null
         else playableTextTile("$CMD_SHORTCUT_PREFIX|${s.letter}", s.letter, s.label)
-    }
-
-    // Text-only, matching the L/A/H/Au and sort tiles' template font/size.
-    private fun shuffleAllItem(): MediaItem = playableTextTile(ID_SHUFFLE_ALL, "Shuffle all", null)
-
-    private fun sortTile(mode: MusicLibrary.SortMode, parentBrowseId: String): MediaItem {
-        val label = when (mode) {
-            MusicLibrary.SortMode.DATE_ASC -> "Date ↑ oldest"
-            MusicLibrary.SortMode.DATE_DESC -> "Date ↓ newest"
-            MusicLibrary.SortMode.NAME_ASC -> "Name A–Z"
-            MusicLibrary.SortMode.NAME_DESC -> "Name Z–A"
-        }
-        // Text-only browsable tile — same render path (and template font/size) as the
-        // L/A/H/Au and Radio tiles. Browsable so tapping re-enters onGetChildren, applies
-        // the sort, and re-lists the current folder.
-        return browsableTextTile("$CMD_SORT_PREFIX|${mode.name}|$parentBrowseId", label, styleExtras(true, false))
-    }
-
-    /**
-     * The car's shuffle toggle, shown atop each folder's song list. Browsable so tapping
-     * re-enters onGetChildren, flips the shared shuffle mode, and re-lists the folder with the
-     * label updated. When off the list plays in the current sort order; when on, ExoPlayer
-     * shuffles playback of the same queue.
-     */
-    private fun shuffleTile(parentBrowseId: String): MediaItem {
-        val label = if (shuffleOn) "Shuffle: On" else "Shuffle: Off"
-        return browsableTextTile("$CMD_SHUFFLE_PREFIX|$parentBrowseId", label, styleExtras(true, false))
     }
 
     // ---- Playback resolution --------------------------------------------------
@@ -666,18 +649,20 @@ class PlaybackService : MediaLibraryService() {
     // ---- Context-scoped search ------------------------------------------------
 
     /**
-     * Android Auto has one global search box and never tells us the folder, so search is
-     * scoped to the last-browsed node: radio stations in the Radio tab, otherwise only the
-     * current folder's songs (All Songs = everything). Never a mixed song+radio dump.
+     * Android Auto has one global search box and never tells us the folder, so the corpus is
+     * decided by the list currently on screen — never by what's playing. In the Radio list a
+     * search hits the online station directory; anywhere in music it searches the whole phone
+     * library (matching the phone, where song search spans every folder rather than being pinned
+     * to the one you last opened). So a search while viewing the Radio list finds stations even
+     * if a song is playing, and a search while viewing a playlist finds songs even if a station
+     * is playing. Never a mixed song+radio dump.
      */
     private fun contextSearchItems(query: String): List<MediaItem> {
         MusicLibrary.ensureLoaded(this)
         return if (lastBrowsedParent == TAB_RADIO) {
             RadioBrowser.search(query).map { radioItem(it) }
         } else {
-            val folderId = if (lastBrowsedParent.startsWith("folder:"))
-                lastBrowsedParent.removePrefix("folder:") else null
-            MusicLibrary.search(query, folderId).map { songItem(it) }
+            MusicLibrary.search(query, null).map { songItem(it) }
         }
     }
 
@@ -741,17 +726,6 @@ class PlaybackService : MediaLibraryService() {
         return MediaItem.Builder().setMediaId(id).setMediaMetadata(meta).build()
     }
 
-    /** Browsable tile with no artwork — title renders in the head unit's template font. */
-    private fun browsableTextTile(id: String, title: String, extras: Bundle): MediaItem {
-        val meta = MediaMetadata.Builder()
-            .setTitle(title)
-            .setIsBrowsable(true)
-            .setIsPlayable(false)
-            .setExtras(extras)
-            .build()
-        return MediaItem.Builder().setMediaId(id).setMediaMetadata(meta).build()
-    }
-
     private fun songItem(track: Track): MediaItem {
         val meta = MediaMetadata.Builder()
             .setTitle(track.title)
@@ -783,27 +757,21 @@ class PlaybackService : MediaLibraryService() {
             .build()
     }
 
-    private fun styleExtras(browsableGrid: Boolean, playableGrid: Boolean): Bundle = Bundle().apply {
-        putInt(
-            MusicLibrary.CONTENT_STYLE_BROWSABLE_HINT,
-            if (browsableGrid) MusicLibrary.CONTENT_STYLE_GRID else MusicLibrary.CONTENT_STYLE_LIST,
-        )
-        putInt(
-            MusicLibrary.CONTENT_STYLE_PLAYABLE_HINT,
-            if (playableGrid) MusicLibrary.CONTENT_STYLE_GRID else MusicLibrary.CONTENT_STYLE_LIST,
-        )
-    }
+    /**
+     * The whole car app is a vertical list — no large grid tiles anywhere. Besides matching the
+     * phone's list layout, list rows don't render the big broken-artwork "!" placeholder that
+     * grid tiles show for a song/station/shortcut without loadable album art. The old
+     * browsable/playable-grid flags are kept for call-site compatibility but ignored.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun styleExtras(browsableGrid: Boolean = false, playableGrid: Boolean = false): Bundle =
+        Bundle().apply {
+            putInt(MusicLibrary.CONTENT_STYLE_BROWSABLE_HINT, MusicLibrary.CONTENT_STYLE_LIST)
+            putInt(MusicLibrary.CONTENT_STYLE_PLAYABLE_HINT, MusicLibrary.CONTENT_STYLE_LIST)
+        }
 
     private fun resourceUri(resId: Int): Uri =
         Uri.parse("android.resource://$packageName/$resId")
-
-    private fun parseSortCommand(id: String): Pair<MusicLibrary.SortMode, String> {
-        // cmd:sort|MODE|target  (target may itself be "folder:Some/Path")
-        val parts = id.split("|")
-        val mode = runCatching { MusicLibrary.SortMode.valueOf(parts[1]) }.getOrDefault(MusicLibrary.SortMode.NAME_ASC)
-        val target = parts.drop(2).joinToString("|")
-        return mode to target
-    }
 
     private fun <T> supply(block: () -> T): ListenableFuture<T> =
         Futures.submit(Callable { block() }, browseExecutor)
@@ -823,11 +791,8 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         const val ID_ROOT = "root"
         const val TAB_PLAYLISTS = "tab_playlists"
-        const val TAB_SONGS = "tab_songs"
         const val TAB_RADIO = "tab_radio"
         const val ID_SHUFFLE_ALL = "cmd:shuffle_all"
-        const val CMD_SORT_PREFIX = "cmd:sort"
-        const val CMD_SHUFFLE_PREFIX = "cmd:shuffle_toggle"
         const val CMD_SHORTCUT_PREFIX = "cmd:shortcut"
 
         const val ACTION_SHORTCUT_PREFIX = "com.phoenix.SHORTCUT."
@@ -836,9 +801,16 @@ class PlaybackService : MediaLibraryService() {
 
         const val SLIDESHOW_INTERVAL_MS = 12_000L
 
-        /** Crossfade length between songs, and the fade/poll granularity. */
-        const val CROSSFADE_MS = 5_000L
+        /** Crossfade length between songs, and the fade/poll granularity. A long 7s dissolve; the
+         *  100ms poll keeps the fire point close to the exact 7s-from-end mark (so P2's alignment
+         *  seek is sub-100ms and stays inside its pre-buffered region), and the 50ms tick gives a
+         *  ~140-step ramp for a smooth blend. */
+        const val CROSSFADE_MS = 7_000L
         const val CROSSFADE_TICK_MS = 50L
-        const val CROSSFADE_POLL_MS = 200L
+        const val CROSSFADE_POLL_MS = 100L
+
+        /** How far ahead of the fade to pre-buffer the outgoing tail into P2 (removes the stall).
+         *  Generous lead so P2 is fully buffered and parked well before the fade fires. */
+        const val CROSSFADE_PRELOAD_MS = 4_000L
     }
 }

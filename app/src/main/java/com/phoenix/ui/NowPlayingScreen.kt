@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -23,11 +24,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +52,7 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onGoToFolder: (String) -> Unit,
     onOpenRadio: () -> Unit,
+    onOpenSearch: (Boolean) -> Unit,
 ) {
     BackHandler { onBack() }
 
@@ -56,6 +62,8 @@ fun NowPlayingScreen(
     val shuffle by vm.shuffle.collectAsState()
     val mediaId by vm.currentMediaId.collectAsState()
     val artworkUri by vm.artwork.collectAsState()
+    val position by vm.position.collectAsState()
+    val duration by vm.duration.collectAsState()
     val favorites by RadioFavorites.favorites.collectAsState()
 
     val isRadio = mediaId?.startsWith("radio:") == true
@@ -117,11 +125,41 @@ fun NowPlayingScreen(
                 Text(it, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
 
+            // Seek bar — songs only (radio has no length, so duration is 0). While the thumb is
+            // held we show the dragged position and only commit the seek on release, so the
+            // 500ms position poll doesn't yank the thumb back mid-drag.
+            if (duration > 0) {
+                var scrubbing by remember { mutableStateOf(false) }
+                var scrubFraction by remember { mutableStateOf(0f) }
+                val fraction =
+                    if (scrubbing) scrubFraction else (position.toFloat() / duration).coerceIn(0f, 1f)
+                Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                    Slider(
+                        value = fraction,
+                        onValueChange = { scrubbing = true; scrubFraction = it },
+                        onValueChangeFinished = {
+                            vm.seekTo((scrubFraction * duration).toLong())
+                            scrubbing = false
+                        },
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(formatTime((fraction * duration).toLong()), style = MaterialTheme.typography.labelMedium)
+                        Text(formatTime(duration), style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+
             Row(
                 Modifier.fillMaxWidth().padding(top = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(onClick = { onOpenSearch(isRadio) }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                }
                 IconButton(onClick = { vm.toggleShuffle() }) {
                     Icon(
                         Icons.Filled.Shuffle,
@@ -158,4 +196,10 @@ fun NowPlayingScreen(
             }
         }
     }
+}
+
+/** ms → "m:ss" for the seek-bar time labels. */
+private fun formatTime(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0L)
+    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }

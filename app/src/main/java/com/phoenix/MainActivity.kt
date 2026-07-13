@@ -15,9 +15,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.phoenix.playback.MusicLibrary
 import com.phoenix.playback.PlayerViewModel
+import com.phoenix.playback.Track
 import com.phoenix.ui.BrowseScreen
 import com.phoenix.ui.NowPlayingScreen
 import com.phoenix.ui.RadioScreen
+import com.phoenix.ui.SearchScreen
 import com.phoenix.ui.theme.PhoenixTheme
 import kotlin.concurrent.thread
 
@@ -59,13 +61,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Browse, Radio, NowPlaying }
+private enum class Screen { Browse, Radio, NowPlaying, Search }
 
 @Composable
 private fun PhoenixAppUi(vm: PlayerViewModel) {
     var screen by remember { mutableStateOf(Screen.Browse) }
     // null = the root folder list; otherwise the folder id currently open.
     var openFolder by remember { mutableStateOf<String?>(null) }
+    // Search context + where to return when it closes.
+    var searchRadio by remember { mutableStateOf(false) }
+    var searchOrigin by remember { mutableStateOf(Screen.Browse) }
 
     // Jump-to-folder from a letter shortcut: navigate into it and start playing (shuffled).
     val goToFolder: (String) -> Unit = { folderName ->
@@ -77,6 +82,25 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
         }
     }
 
+    // Open the shared search screen. [radio] picks the corpus; remember the current screen so
+    // the back button returns there.
+    val openSearch: (Boolean) -> Unit = { radio ->
+        searchRadio = radio
+        searchOrigin = screen
+        screen = Screen.Search
+    }
+
+    // A song chosen from search: switch the browsed folder + the playback queue to the playlist
+    // that song lives in, positioned at it, so next/shuffle-next stay within that playlist.
+    val playLibrarySong: (Track) -> Unit = { track ->
+        val folderId = track.relativePath.trimEnd('/')
+        openFolder = folderId
+        val queue = MusicLibrary.tracksInFolder(folderId)
+        val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        vm.playTracks(queue, index)
+        screen = Screen.NowPlaying
+    }
+
     when (screen) {
         Screen.Browse -> BrowseScreen(
             vm = vm,
@@ -86,12 +110,14 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
             onOpenRadio = { screen = Screen.Radio },
             onOpenNowPlaying = { screen = Screen.NowPlaying },
             onGoToFolder = goToFolder,
+            onOpenSearch = openSearch,
         )
         Screen.Radio -> RadioScreen(
             vm = vm,
             onOpenNowPlaying = { screen = Screen.NowPlaying },
             onBack = { screen = Screen.Browse },
             onGoToFolder = goToFolder,
+            onOpenSearch = openSearch,
         )
         Screen.NowPlaying -> NowPlayingScreen(
             vm = vm,
@@ -101,6 +127,14 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
                 MusicLibrary.folderIdByName(folderName)?.let { vm.playFolderShuffled(it) }
             },
             onOpenRadio = { screen = Screen.Radio },
+            onOpenSearch = openSearch,
+        )
+        Screen.Search -> SearchScreen(
+            vm = vm,
+            searchRadio = searchRadio,
+            onBack = { screen = searchOrigin },
+            onOpenNowPlaying = { screen = Screen.NowPlaying },
+            onPlayLibrarySong = playLibrarySong,
         )
     }
 }

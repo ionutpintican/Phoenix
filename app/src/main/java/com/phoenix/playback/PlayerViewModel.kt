@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -11,9 +13,12 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import com.phoenix.radio.RadioStation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Bridges the phone Compose UI to the shared [PlaybackService] session via a
@@ -42,6 +47,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val _shuffle = MutableStateFlow(false)
     val shuffle: StateFlow<Boolean> = _shuffle.asStateFlow()
 
+    /** Current playback position and track length, in ms. [duration] is 0 when unknown (radio). */
+    private val _position = MutableStateFlow(0L)
+    val position: StateFlow<Long> = _position.asStateFlow()
+
+    private val _duration = MutableStateFlow(0L)
+    val duration: StateFlow<Long> = _duration.asStateFlow()
+
     val sortMode: StateFlow<MusicLibrary.SortMode> = MusicLibrary.sortMode
 
     init {
@@ -53,6 +65,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 syncFrom(c)
             }
         }, MoreExecutors.directExecutor())
+
+        // The controller doesn't push position continuously, so poll it while a track plays to
+        // drive the seek bar. Dragging still reads live position between updates.
+        viewModelScope.launch {
+            while (isActive) {
+                controller?.let { c ->
+                    _position.value = c.currentPosition.coerceAtLeast(0L)
+                    _duration.value = c.duration.let { if (it == C.TIME_UNSET || it < 0) 0L else it }
+                }
+                delay(500)
+            }
+        }
     }
 
     private inner class PlayerListener : Player.Listener {
@@ -70,6 +94,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         _title.value = m.title?.toString()
         _artist.value = m.artist?.toString()
         _artwork.value = m.artworkUri
+        _position.value = c.currentPosition.coerceAtLeast(0L)
+        _duration.value = c.duration.let { if (it == C.TIME_UNSET || it < 0) 0L else it }
     }
 
     // ---- Commands -------------------------------------------------------------
@@ -104,6 +130,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun next() { controller?.seekToNextMediaItem() }
     fun previous() { controller?.seekToPreviousMediaItem() }
+
+    /** Scrub within the current track. */
+    fun seekTo(positionMs: Long) {
+        val c = controller ?: return
+        _position.value = positionMs.coerceAtLeast(0L)
+        c.seekTo(positionMs.coerceAtLeast(0L))
+    }
 
     fun toggleShuffle() {
         val c = controller ?: return

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +53,7 @@ fun BrowseScreen(
     onOpenRadio: () -> Unit,
     onOpenNowPlaying: () -> Unit,
     onGoToFolder: (String) -> Unit,
+    onOpenSearch: (Boolean) -> Unit,
 ) {
     val revision by MusicLibrary.revision.collectAsState()
     // The folder song list is sorted by the global sort mode, so recompute it when that
@@ -88,6 +90,9 @@ fun BrowseScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = { onOpenSearch(false) }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                }
                 IconButton(onClick = { vm.toggleShuffle() }) {
                     Icon(
                         Icons.Filled.Shuffle,
@@ -133,7 +138,7 @@ fun BrowseScreen(
 
 /** A track's album art thumbnail, falling back to the music-note icon when it can't load. */
 @Composable
-private fun TrackArtwork(uri: Uri?) {
+fun TrackArtwork(uri: Uri?) {
     val art = rememberArtwork(uri)
     if (art != null) {
         Image(
