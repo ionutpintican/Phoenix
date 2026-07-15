@@ -17,7 +17,16 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Distinct package id + app name so this feature-branch build installs *alongside*
+            // the main app (its own icon, its own SharedPreferences, its own Android Auto entry)
+            // instead of replacing it. Lets Settings and main be tested side by side.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-settings"
+            resValue("string", "app_name", "Phoenix (Settings)")
+        }
         release {
+            resValue("string", "app_name", "Phoenix")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
