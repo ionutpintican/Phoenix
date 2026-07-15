@@ -20,6 +20,7 @@ import com.phoenix.ui.BrowseScreen
 import com.phoenix.ui.NowPlayingScreen
 import com.phoenix.ui.RadioScreen
 import com.phoenix.ui.SearchScreen
+import com.phoenix.ui.SettingsScreen
 import com.phoenix.ui.theme.PhoenixTheme
 import kotlin.concurrent.thread
 
@@ -61,7 +62,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Browse, Radio, NowPlaying, Search }
+private enum class Screen { Browse, Radio, NowPlaying, Search, Settings }
 
 @Composable
 private fun PhoenixAppUi(vm: PlayerViewModel) {
@@ -111,6 +112,7 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
             onOpenNowPlaying = { screen = Screen.NowPlaying },
             onGoToFolder = goToFolder,
             onOpenSearch = openSearch,
+            onOpenSettings = { screen = Screen.Settings },
         )
         Screen.Radio -> RadioScreen(
             vm = vm,
@@ -135,6 +137,9 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
             onBack = { screen = searchOrigin },
             onOpenNowPlaying = { screen = Screen.NowPlaying },
             onPlayLibrarySong = playLibrarySong,
+        )
+        Screen.Settings -> SettingsScreen(
+            onBack = { screen = Screen.Browse },
         )
     }
 }

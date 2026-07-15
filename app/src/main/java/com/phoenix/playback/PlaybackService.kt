@@ -24,6 +24,8 @@ import com.phoenix.R
 import com.phoenix.radio.RadioBrowser
 import com.phoenix.radio.RadioFavorites
 import com.phoenix.radio.RadioStation
+import com.phoenix.settings.Settings
+import com.phoenix.settings.ShortcutIcons
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -211,6 +213,13 @@ class PlaybackService : MediaLibraryService() {
             if (crossfadeArmed && !crossfading) disarmCrossfade()
             return
         }
+        // Crossfade length is user-configurable; 0 turns it off entirely.
+        val crossfadeMs = Settings.crossfadeMs
+        if (crossfadeMs <= 0L) {
+            if (crossfadeArmed) disarmCrossfade()
+            return
+        }
+
         // Songs only. Radio is live (no real duration) and must not crossfade.
         val current = player.currentMediaItem ?: return
         if (current.mediaId.startsWith("radio:")) return
@@ -224,14 +233,14 @@ class PlaybackService : MediaLibraryService() {
         // Pre-buffer the outgoing tail into P2 a few seconds ahead of the fade so firing is
         // instant (no ~1s load/seek stall). Disarm again if the user seeks back out of range.
         when {
-            !crossfadeArmed && remaining in (CROSSFADE_MS + 1)..(CROSSFADE_MS + CROSSFADE_PRELOAD_MS) ->
+            !crossfadeArmed && remaining in (crossfadeMs + 1)..(crossfadeMs + CROSSFADE_PRELOAD_MS) ->
                 armCrossfade(current, duration)
-            crossfadeArmed && remaining > CROSSFADE_MS + CROSSFADE_PRELOAD_MS ->
+            crossfadeArmed && remaining > crossfadeMs + CROSSFADE_PRELOAD_MS ->
                 disarmCrossfade()
         }
 
         // A song shorter than the crossfade window still crossfades once, right at its start's tail.
-        if (remaining in 1..CROSSFADE_MS) startCrossfade(current)
+        if (remaining in 1..crossfadeMs) startCrossfade(current)
     }
 
     /** Load the outgoing song into P2 and park it (paused, silent) a little *before* the fade-start
@@ -243,7 +252,7 @@ class PlaybackService : MediaLibraryService() {
         crossfadeArmed = true
         crossfadePlayer.setMediaItem(MediaItem.fromUri(uri))
         crossfadePlayer.prepare()
-        crossfadePlayer.seekTo((duration - CROSSFADE_MS - CROSSFADE_LEADIN_MS).coerceAtLeast(0))
+        crossfadePlayer.seekTo((duration - Settings.crossfadeMs - CROSSFADE_LEADIN_MS).coerceAtLeast(0))
         crossfadePlayer.volume = 0f
         crossfadePlayer.playWhenReady = false
     }
@@ -280,7 +289,7 @@ class PlaybackService : MediaLibraryService() {
         player.seekToNextMediaItem()
 
         crossfadeJob = mainScope.launch {
-            val steps = (CROSSFADE_MS / CROSSFADE_TICK_MS).toInt()
+            val steps = (Settings.crossfadeMs / CROSSFADE_TICK_MS).toInt().coerceAtLeast(1)
             for (i in 1..steps) {
                 delay(CROSSFADE_TICK_MS)
                 val fraction = i.toFloat() / steps
@@ -380,7 +389,7 @@ class PlaybackService : MediaLibraryService() {
             val available = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                 .buildUpon()
                 .apply {
-                    carShortcuts.forEach { add(SessionCommand(ACTION_SHORTCUT_PREFIX + it.letter, Bundle.EMPTY)) }
+                    carShortcuts().forEach { add(SessionCommand(ACTION_SHORTCUT_PREFIX + it.index, Bundle.EMPTY)) }
                     add(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
                     add(SessionCommand(ACTION_PLAY_RADIO, Bundle.EMPTY))
                 }
@@ -400,8 +409,8 @@ class PlaybackService : MediaLibraryService() {
             val action = customCommand.customAction
             when {
                 action.startsWith(ACTION_SHORTCUT_PREFIX) -> {
-                    val letter = action.removePrefix(ACTION_SHORTCUT_PREFIX)
-                    mainScope.launch { playTracks(shortcutTracks(letter)) }
+                    val index = action.removePrefix(ACTION_SHORTCUT_PREFIX).toIntOrNull()
+                    if (index != null) mainScope.launch { playTracks(shortcutTracks(index)) }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 action == ACTION_TOGGLE_FAVORITE -> {
@@ -442,9 +451,9 @@ class PlaybackService : MediaLibraryService() {
                 mediaId == ID_ROOT -> browsableItem(ID_ROOT, "Phoenix", null, styleExtras(true, true))
                 mediaId == ID_SHUFFLE_ALL -> playableTextTile(ID_SHUFFLE_ALL, "Shuffle all", null)
                 mediaId.startsWith("$CMD_SHORTCUT_PREFIX|") -> {
-                    val letter = mediaId.substringAfterLast('|')
-                    val s = carShortcuts.firstOrNull { it.letter == letter }
-                    if (s != null) playableTextTile(mediaId, s.letter, s.label) else null
+                    val idx = mediaId.substringAfterLast('|').toIntOrNull()
+                    val s = idx?.let { carShortcuts().getOrNull(it) }
+                    if (s != null) playableTextTile(mediaId, s.text, s.folderName) else null
                 }
                 mediaId == TAB_PLAYLISTS -> browsableItem(TAB_PLAYLISTS, "Playlists", null, styleExtras(true, true))
                 mediaId == TAB_RADIO -> browsableItem(TAB_RADIO, "Radio", null, styleExtras(true, true))
@@ -608,12 +617,12 @@ class PlaybackService : MediaLibraryService() {
         addAll(tracks.map { songItem(it) })
     }
 
-    private fun letterTiles(): List<MediaItem> = carShortcuts.mapNotNull { s ->
-        // A letter whose folder isn't on the device is hidden.
-        // The letter is the TITLE text (not a drawn glyph) so it renders in the same
+    private fun letterTiles(): List<MediaItem> = carShortcuts().mapNotNull { s ->
+        // A shortcut whose folder isn't on the device is hidden.
+        // The caption is the TITLE text (not a drawn glyph) so it renders in the same
         // template font as the song rows. Folder name is the subtitle.
         if (MusicLibrary.folderIdByName(s.folderName) == null) null
-        else playableTextTile("$CMD_SHORTCUT_PREFIX|${s.letter}", s.letter, s.label)
+        else playableTextTile("$CMD_SHORTCUT_PREFIX|${s.index}", s.text, s.folderName)
     }
 
     // ---- Playback resolution --------------------------------------------------
@@ -626,7 +635,8 @@ class PlaybackService : MediaLibraryService() {
             id == ID_SHUFFLE_ALL ->
                 MusicLibrary.allTracks().shuffled().map { songItem(it) } to 0
             id.startsWith("$CMD_SHORTCUT_PREFIX|") ->
-                shortcutTracks(id.substringAfterLast('|')).map { songItem(it) } to 0
+                (id.substringAfterLast('|').toIntOrNull()?.let { shortcutTracks(it) } ?: emptyList())
+                    .map { songItem(it) } to 0
             id.startsWith("folder:") ->
                 MusicLibrary.playableTracksFor(id.removePrefix("folder:")).map { songItem(it) } to 0
             id.startsWith("song:") -> {
@@ -650,9 +660,9 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** Tracks for a letter shortcut, shuffled — every press starts a fresh random order. */
-    private fun shortcutTracks(letter: String): List<Track> {
-        val shortcut = carShortcuts.firstOrNull { it.letter == letter } ?: return emptyList()
+    /** Tracks for a shortcut (by its index), shuffled — every press starts a fresh random order. */
+    private fun shortcutTracks(index: Int): List<Track> {
+        val shortcut = carShortcuts().getOrNull(index) ?: return emptyList()
         val folderId = MusicLibrary.folderIdByName(shortcut.folderName) ?: return emptyList()
         return MusicLibrary.playableTracksFor(folderId).shuffled()
     }
@@ -711,15 +721,15 @@ class PlaybackService : MediaLibraryService() {
                 .setSessionCommand(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
                 .build()
         }
-        carShortcuts.forEach { s ->
+        carShortcuts().forEach { s ->
             buttons += CommandButton.Builder()
-                .setDisplayName(s.letter)
+                .setDisplayName(s.text)
                 .setIconResId(s.iconRes)
                 // Also hand Auto an android.resource:// URI for the same drawable. The head
                 // unit resolves the icon itself from this URI (no cross-process resId lookup),
                 // which is what keeps the letter glyph from degrading to the "!" placeholder.
                 .setIconUri(resourceUri(s.iconRes))
-                .setSessionCommand(SessionCommand(ACTION_SHORTCUT_PREFIX + s.letter, Bundle.EMPTY))
+                .setSessionCommand(SessionCommand(ACTION_SHORTCUT_PREFIX + s.index, Bundle.EMPTY))
                 .build()
         }
         // Radio always available in the now-playing controls, mirroring the phone's Radio
@@ -810,15 +820,22 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- Constants ------------------------------------------------------------
 
-    /** A car letter shortcut → the folder it jumps to. */
-    private data class CarShortcut(val letter: String, val label: String, val folderName: String, val iconRes: Int)
+    /**
+     * A resolved car shortcut for the current [Settings.shortcuts]. [index] is the stable key for
+     * its session command / media id (letters aren't unique enough now that the user picks them).
+     * [text] is the row/button caption — the letter, or the folder name for an icon-only shortcut.
+     */
+    private data class CarShortcut(val index: Int, val text: String, val folderName: String, val iconRes: Int)
 
-    private val carShortcuts = listOf(
-        CarShortcut("L", "Leni", "Leni", R.drawable.ic_letter_l),
-        CarShortcut("A", "Action", "Action", R.drawable.ic_letter_a),
-        CarShortcut("H", "Hideout", "Hideout", R.drawable.ic_letter_h),
-        CarShortcut("Au", "Audiobooks", "Audiobooks", R.drawable.ic_letter_au),
-    )
+    private fun carShortcuts(): List<CarShortcut> =
+        Settings.shortcuts.value.mapIndexed { i, s ->
+            CarShortcut(
+                index = i,
+                text = s.letter ?: s.folderName,
+                folderName = s.folderName,
+                iconRes = ShortcutIcons.drawableFor(s),
+            )
+        }
 
     companion object {
         const val ID_ROOT = "root"
@@ -833,11 +850,10 @@ class PlaybackService : MediaLibraryService() {
 
         const val SLIDESHOW_INTERVAL_MS = 12_000L
 
-        /** Crossfade length between songs, and the fade/poll granularity. A long 7s dissolve; the
-         *  100ms poll keeps the fire point close to the exact 7s-from-end mark (so P2's alignment
-         *  seek is sub-100ms and stays inside its pre-buffered region), and the 50ms tick gives a
-         *  ~140-step ramp for a smooth blend. */
-        const val CROSSFADE_MS = 7_000L
+        /** Fade/poll granularity. The dissolve length itself is user-configurable
+         *  ([Settings.crossfadeMs], default 7s); the 100ms poll keeps the fire point close to the
+         *  exact from-end mark (so P2's alignment seek is sub-100ms and stays inside its
+         *  pre-buffered region), and the 50ms tick gives a smooth many-step ramp. */
         const val CROSSFADE_TICK_MS = 50L
         const val CROSSFADE_POLL_MS = 100L
 
