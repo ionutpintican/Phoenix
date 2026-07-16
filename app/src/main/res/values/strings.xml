@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- app_name is set per build type in app/build.gradle.kts (resValue) so the debug
-         feature-branch build can carry a distinct name and install alongside the main app. -->
+    <string name="app_name">Phoenix</string>
 </resources>
