@@ -24,7 +24,6 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.phoenix.MainActivity
-import com.phoenix.R
 import com.phoenix.radio.RadioBrowser
 import com.phoenix.radio.RadioFavorites
 import com.phoenix.radio.RadioRecents
@@ -163,6 +162,12 @@ class PlaybackService : MediaLibraryService() {
             // Keep the outgoing tail in lock-step with the user pausing/resuming mid-crossfade.
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (crossfading) crossfadePlayer.playWhenReady = isPlaying
+            }
+
+            // Flip the car's shuffle button between its on/off icon when shuffle mode changes
+            // (toggled from the car button, the phone, or anywhere).
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                session.setCustomLayout(buildCustomLayout())
             }
 
             // Surface playback failures (esp. a YouTube stream that failed to resolve) instead of
@@ -462,6 +467,7 @@ class PlaybackService : MediaLibraryService() {
                     carShortcuts().forEach { add(SessionCommand(ACTION_SHORTCUT_PREFIX + it.index, Bundle.EMPTY)) }
                     add(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
                     add(SessionCommand(ACTION_PLAY_RADIO, Bundle.EMPTY))
+                    add(SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
                 }
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -497,6 +503,12 @@ class PlaybackService : MediaLibraryService() {
                         )
                         mainScope.launch { playRadio(stations) }
                     }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                action == ACTION_TOGGLE_SHUFFLE -> {
+                    // Session callbacks run on the main thread, so touching the player is safe.
+                    // The onShuffleModeEnabledChanged listener rebuilds the layout to flip the icon.
+                    player.shuffleModeEnabled = !player.shuffleModeEnabled
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
             }
@@ -833,39 +845,26 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    // ---- Now-playing custom layout (letter buttons + radio heart) -------------
+    // ---- Now-playing custom layout -------------------------------------------
 
+    /**
+     * The car now-playing screen shows only the standard transport controls (play/pause, next,
+     * previous — drawn by Android Auto from the player commands) plus search (from the browsable
+     * library), and a single shuffle toggle. Shuffle isn't an auto-rendered transport control, so
+     * it's the one custom button we add; it uses Media3's predefined shuffle icon so the head unit
+     * renders the proper glyph, and its on/off variant tracks the player's shuffle state (the
+     * layout is rebuilt on [Player.Listener.onShuffleModeEnabledChanged]). No letter-playlist
+     * shortcuts, Radio switch, or favorite heart here — that keeps the UI conventional.
+     */
     private fun buildCustomLayout(): ImmutableList<CommandButton> {
-        val buttons = ArrayList<CommandButton>()
-        val current = player.currentMediaItem?.mediaId
-        if (current != null && current.startsWith("radio:")) {
-            val fav = RadioFavorites.isFavorite(current.removePrefix("radio:"))
-            buttons += CommandButton.Builder()
-                .setDisplayName(if (fav) "Unfavorite" else "Favorite")
-                .setIconResId(if (fav) R.drawable.ic_favorite else R.drawable.ic_favorite_border)
-                .setSessionCommand(SessionCommand(ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
-                .build()
-        }
-        carShortcuts().forEach { s ->
-            buttons += CommandButton.Builder()
-                .setDisplayName(s.text)
-                .setIconResId(s.iconRes)
-                // Also hand Auto an android.resource:// URI for the same drawable. The head
-                // unit resolves the icon itself from this URI (no cross-process resId lookup),
-                // which is what keeps the letter glyph from degrading to the "!" placeholder.
-                .setIconUri(resourceUri(s.iconRes))
-                .setSessionCommand(SessionCommand(ACTION_SHORTCUT_PREFIX + s.index, Bundle.EMPTY))
-                .build()
-        }
-        // Radio always available in the now-playing controls, mirroring the phone's Radio
-        // button. Tapping switches playback to the radio list (favorites first).
-        buttons += CommandButton.Builder()
-            .setDisplayName("Radio")
-            .setIconResId(R.drawable.ic_radio)
-            .setIconUri(resourceUri(R.drawable.ic_radio))
-            .setSessionCommand(SessionCommand(ACTION_PLAY_RADIO, Bundle.EMPTY))
+        val shuffleOn = player.shuffleModeEnabled
+        val shuffle = CommandButton.Builder(
+            if (shuffleOn) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF
+        )
+            .setDisplayName(if (shuffleOn) "Shuffle on" else "Shuffle off")
+            .setSessionCommand(SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
             .build()
-        return ImmutableList.copyOf(buttons)
+        return ImmutableList.of(shuffle)
     }
 
     // ---- MediaItem builders ---------------------------------------------------
@@ -1007,6 +1006,7 @@ class PlaybackService : MediaLibraryService() {
         const val ACTION_SHORTCUT_PREFIX = "com.phoenix.SHORTCUT."
         const val ACTION_TOGGLE_FAVORITE = "com.phoenix.TOGGLE_FAVORITE"
         const val ACTION_PLAY_RADIO = "com.phoenix.PLAY_RADIO"
+        const val ACTION_TOGGLE_SHUFFLE = "com.phoenix.TOGGLE_SHUFFLE"
 
         const val SLIDESHOW_INTERVAL_MS = 12_000L
 
