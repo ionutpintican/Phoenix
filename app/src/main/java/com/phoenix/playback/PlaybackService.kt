@@ -23,7 +23,9 @@ import com.phoenix.MainActivity
 import com.phoenix.R
 import com.phoenix.radio.RadioBrowser
 import com.phoenix.radio.RadioFavorites
+import com.phoenix.radio.RadioRecents
 import com.phoenix.radio.RadioStation
+import com.phoenix.radio.stationSubtitle
 import com.phoenix.settings.Settings
 import com.phoenix.settings.ShortcutIcons
 import kotlinx.coroutines.CoroutineScope
@@ -87,6 +89,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onCreate() {
         super.onCreate()
         RadioFavorites.init(this)
+        RadioRecents.init(this)
         ioScope.launch {
             MusicLibrary.ensureLoaded(this@PlaybackService)
             slideshow.load(this@PlaybackService)
@@ -129,6 +132,12 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 session.setCustomLayout(buildCustomLayout())
+                // Remember a station the moment it becomes current — covers phone and car, whether
+                // reached by tapping the list, skipping the queue, or the now-playing Radio button.
+                mediaItem?.mediaId?.takeIf { it.startsWith("radio:") }?.let { id ->
+                    RadioBrowser.stationByMediaId(id, RadioFavorites.favorites.value)
+                        ?.let { RadioRecents.record(it) }
+                }
                 if (selfCrossfadeTransition) {
                     // Our own 5s-early advance — leave the running crossfade alone.
                     selfCrossfadeTransition = false
@@ -161,6 +170,13 @@ class PlaybackService : MediaLibraryService() {
             RadioFavorites.favorites.drop(1).collect {
                 session.notifyChildrenChanged(TAB_RADIO, Int.MAX_VALUE, null)
                 session.setCustomLayout(buildCustomLayout())
+            }
+        }
+
+        // A newly played station → refresh the Radio tab so its "recently played" rows update.
+        mainScope.launch {
+            RadioRecents.recents.drop(1).collect {
+                session.notifyChildrenChanged(TAB_RADIO, Int.MAX_VALUE, null)
             }
         }
 
@@ -418,10 +434,13 @@ class PlaybackService : MediaLibraryService() {
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 action == ACTION_PLAY_RADIO -> {
-                    // Switch playback to the radio list (favorites first). browseStations touches
+                    // Switch playback to the radio list (favorites, then recents, then all).
+                    // browseStations touches
                     // the network, so resolve on IO and hop back to Main to drive the player.
                     ioScope.launch {
-                        val stations = RadioBrowser.browseStations(RadioFavorites.favorites.value)
+                        val stations = RadioBrowser.browseStations(
+                            RadioFavorites.favorites.value, RadioRecents.recents.value
+                        )
                         mainScope.launch { playRadio(stations) }
                     }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
@@ -575,10 +594,20 @@ class PlaybackService : MediaLibraryService() {
         val id = item.mediaId
         return when {
             id.startsWith("song:") -> MusicLibrary.getTrackByMediaId(id)?.let { songItem(it) } ?: item
-            id.startsWith("radio:") ->
-                RadioBrowser.stationByMediaId(id, RadioFavorites.favorites.value)?.let { radioItem(it) } ?: item
+            id.startsWith("radio:") -> resolveRadioItem(item)
             else -> item
         }
+    }
+
+    /** Turn a controller-sent radio item into a playable one. Prefer the directory station (so the
+     *  row also gets its real title / country / favicon back), but fall back to the stream URL the
+     *  controller carried in requestMetadata when the id resolves to nothing — so a selected station
+     *  always plays instead of silently no-op'ing on a URI-less item. */
+    private fun resolveRadioItem(item: MediaItem): MediaItem {
+        RadioBrowser.stationByMediaId(item.mediaId, RadioFavorites.favorites.value)
+            ?.let { return radioItem(it) }
+        val uri = item.requestMetadata.mediaUri ?: item.localConfiguration?.uri ?: return item
+        return item.buildUpon().setUri(uri).build()
     }
 
     // ---- Child builders -------------------------------------------------------
@@ -600,10 +629,11 @@ class PlaybackService : MediaLibraryService() {
             browsableItem("folder:${folder.id}", folder.name, null, styleExtras())
         }
 
-    /** The Radio tab: favorites first, then the top stations — a plain vertical list. */
+    /** The Radio tab: favorites, then recently played, then the top stations — a plain vertical
+     *  list (the car template has no section headers; ordering conveys the grouping). */
     private fun radioTabChildren(): List<MediaItem> {
         val favs = RadioFavorites.favorites.value
-        return RadioBrowser.browseStations(favs).map { radioItem(it) }
+        return RadioBrowser.browseStations(favs, RadioRecents.recents.value).map { radioItem(it) }
     }
 
     /**
@@ -651,7 +681,9 @@ class PlaybackService : MediaLibraryService() {
             id.startsWith("radio:") -> {
                 val favs = RadioFavorites.favorites.value
                 val station = RadioBrowser.stationByMediaId(id, favs)
-                    ?: return items to 0
+                    // Unknown to every list (e.g. a queue restored after a process trim): play just
+                    // this item on its carried URI rather than returning a URI-less, silent item.
+                    ?: return listOf(resolveRadioItem(items.first())) to 0
                 val queue = RadioBrowser.queueContaining(station, favs)
                 val start = queue.indexOfFirst { it.uuid == station.uuid }.coerceAtLeast(0)
                 queue.map { radioItem(it) } to start
@@ -787,7 +819,7 @@ class PlaybackService : MediaLibraryService() {
     private fun radioItem(station: RadioStation): MediaItem {
         val meta = MediaMetadata.Builder()
             .setTitle(station.name)
-            .setArtist(station.country)
+            .setArtist(station.stationSubtitle().ifBlank { station.country })
             .setArtworkUri(station.favicon?.let { runCatching { Uri.parse(it) }.getOrNull() })
             .setIsBrowsable(false)
             .setIsPlayable(true)

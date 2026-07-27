@@ -167,6 +167,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun RadioStation.toMediaItem(): MediaItem = MediaItem.Builder()
         .setMediaId(mediaId)
         .setUri(streamUrl)
+        // A controller's local URI is dropped crossing to the session, but requestMetadata.mediaUri
+        // survives — carry the stream URL there so the session can still play the station if it
+        // can't re-resolve the id against its in-memory lists (e.g. after a process trim).
+        .setRequestMetadata(
+            MediaItem.RequestMetadata.Builder()
+                .setMediaUri(runCatching { Uri.parse(streamUrl) }.getOrNull())
+                .build()
+        )
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)

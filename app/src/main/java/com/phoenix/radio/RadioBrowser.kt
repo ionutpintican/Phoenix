@@ -43,27 +43,70 @@ object RadioBrowser {
         return stations
     }
 
-    /** Browse ordering: favorites first, then the top stations, de-duplicated. De-dupe by stream
-     *  URL (not uuid) so a seeded favorite and its top-list twin — which carry different ids —
-     *  collapse to the single favorite entry. */
-    fun browseStations(favorites: List<RadioStation>): List<RadioStation> {
-        val rest = topStations()
-        val merged = (favorites + rest).distinctBy { it.streamUrl.ifBlank { it.uuid } }
-        lastBrowse = merged
-        return merged
+    /** A titled group of stations in the browse list (Favorites / Recently played / All stations). */
+    data class RadioSection(val title: String, val stations: List<RadioStation>)
+
+    /**
+     * The browse list split into sections: favorites, then recently-played (that aren't favorites),
+     * then the rest of the top stations. De-duped by stream URL (not uuid) so a seeded favorite and
+     * its top-list twin — which carry different ids — collapse to a single entry, kept in the
+     * highest section it appears in. Favorites and recents are enriched from their fresh top-list
+     * twin so they can show an up-to-date reachability badge and vote count.
+     */
+    fun browseSections(
+        favorites: List<RadioStation>,
+        recents: List<RadioStation>,
+    ): List<RadioSection> {
+        val top = topStations()
+        val fresh = top.associateBy { it.streamUrl.ifBlank { it.uuid } }
+        fun key(s: RadioStation) = s.streamUrl.ifBlank { s.uuid }
+        // Copy the directory's fresh check result / votes onto a stored favorite or recent.
+        fun enrich(s: RadioStation): RadioStation = fresh[key(s)]?.let {
+            s.copy(votes = it.votes, lastCheckOk = it.lastCheckOk)
+        } ?: s
+
+        val seen = mutableSetOf<String>()
+        fun take(list: List<RadioStation>): List<RadioStation> = list.mapNotNull { s ->
+            if (seen.add(key(s))) enrich(s) else null
+        }
+
+        val favSection = take(favorites)
+        val recentSection = take(recents)
+        val allSection = take(top)
+        val sections = buildList {
+            if (favSection.isNotEmpty()) add(RadioSection("Favorites", favSection))
+            if (recentSection.isNotEmpty()) add(RadioSection("Recently played", recentSection))
+            if (allSection.isNotEmpty()) add(RadioSection("All stations", allSection))
+        }
+        // Remember the flattened list so a played station — including a recent that isn't in the
+        // favorites or top lists — can be resolved back from its media id.
+        lastBrowse = sections.flatMap { it.stations }
+        return sections
     }
+
+    /** The browse list flattened — favorites, then recents, then the rest — for the car's plain
+     *  vertical list and for building a play queue. */
+    fun browseStations(
+        favorites: List<RadioStation>,
+        recents: List<RadioStation>,
+    ): List<RadioStation> = browseSections(favorites, recents).flatMap { it.stations }
 
     /** The list a station should queue with: whichever remembered list contains it. */
     fun queueContaining(station: RadioStation, favorites: List<RadioStation>): List<RadioStation> {
-        for (list in listOf(lastSearch, lastBrowse, lastTop, favorites)) {
+        for (list in listOf(lastSearch, lastBrowse, lastTop, favorites, RadioRecents.recents.value)) {
             if (list.any { it.uuid == station.uuid }) return list
         }
         return listOf(station)
     }
 
+    /** Resolve a "radio:uuid" media id back to its full station (the stream URL lives here, not in
+     *  the id). Persistent stores — favorites and recents — are searched alongside the volatile
+     *  browse/search/top caches so a played station stays resolvable even after the process is
+     *  trimmed and those caches are empty; otherwise playback would silently no-op. */
     fun stationByMediaId(mediaId: String, favorites: List<RadioStation>): RadioStation? {
         val uuid = mediaId.removePrefix("radio:")
-        return (favorites + lastBrowse + lastSearch + lastTop).firstOrNull { it.uuid == uuid }
+        return (favorites + RadioRecents.recents.value + lastBrowse + lastSearch + lastTop)
+            .firstOrNull { it.uuid == uuid }
     }
 
     private fun fetch(urlStr: String): List<RadioStation> = try {

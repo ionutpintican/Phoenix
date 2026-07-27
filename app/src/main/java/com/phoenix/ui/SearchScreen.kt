@@ -118,7 +118,7 @@ fun SearchScreen(
                     itemsIndexed(radioResults, key = { _, s -> s.uuid }) { index, station ->
                         ListItem(
                             headlineContent = { Text(station.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = { station.country?.let { Text(it, maxLines = 1) } },
+                            supportingContent = { StationSubtitle(station) },
                             leadingContent = { Icon(Icons.Filled.Radio, contentDescription = null) },
                             modifier = Modifier.fillMaxWidth().clickableRow {
                                 vm.playStation(radioResults, index)
