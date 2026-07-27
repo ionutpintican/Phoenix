@@ -13,6 +13,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import com.phoenix.radio.RadioStation
+import com.phoenix.youtube.YouTubeTrack
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -123,6 +124,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         c.play()
     }
 
+    /** Play a YouTube playlist queue starting at [startIndex]. The items carry only a `yt://`
+     *  placeholder URI; the service's ResolvingDataSource fetches the real audio stream at play
+     *  time (and re-fetches when it expires), so this queue stays playable indefinitely. */
+    fun playYouTube(tracks: List<YouTubeTrack>, startIndex: Int) {
+        val c = controller ?: return
+        if (tracks.isEmpty()) return
+        c.setMediaItems(tracks.map { it.toMediaItem() }, startIndex.coerceIn(0, tracks.lastIndex), 0)
+        c.prepare()
+        c.play()
+    }
+
     fun togglePlayPause() {
         val c = controller ?: return
         if (c.isPlaying) c.pause() else c.play()
@@ -159,6 +171,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 .setArtist(artist)
                 .setAlbumTitle(album)
                 .setArtworkUri(albumArtUri)
+                .setIsPlayable(true)
+                .build()
+        )
+        .build()
+
+    private fun YouTubeTrack.toMediaItem(): MediaItem = MediaItem.Builder()
+        .setMediaId(mediaId)
+        .setUri(playbackUri)
+        // Like radio, the local URI is dropped crossing to the session — but a yt playback URI is
+        // fully reconstructable from the media id there, so nothing extra needs to ride along.
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setArtist(artist)
+                .setArtworkUri(thumbnailUrl?.let { runCatching { Uri.parse(it) }.getOrNull() })
                 .setIsPlayable(true)
                 .build()
         )

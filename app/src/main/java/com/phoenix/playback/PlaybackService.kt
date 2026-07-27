@@ -9,7 +9,11 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -26,6 +30,10 @@ import com.phoenix.radio.RadioFavorites
 import com.phoenix.radio.RadioRecents
 import com.phoenix.radio.RadioStation
 import com.phoenix.radio.stationSubtitle
+import com.phoenix.youtube.YouTubeBrowser
+import com.phoenix.youtube.YouTubePlaylists
+import com.phoenix.youtube.YouTubeTrack
+import com.phoenix.youtube.formatDuration
 import com.phoenix.settings.Settings
 import com.phoenix.settings.ShortcutIcons
 import kotlinx.coroutines.CoroutineScope
@@ -90,12 +98,14 @@ class PlaybackService : MediaLibraryService() {
         super.onCreate()
         RadioFavorites.init(this)
         RadioRecents.init(this)
+        YouTubePlaylists.init(this)
         ioScope.launch {
             MusicLibrary.ensureLoaded(this@PlaybackService)
             slideshow.load(this@PlaybackService)
         }
 
         player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(youtubeAwareDataSourceFactory()))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -109,6 +119,7 @@ class PlaybackService : MediaLibraryService() {
         // The crossfade engine mirrors the main player's audio output but must NOT handle audio
         // focus (that's [player]'s job) or the becoming-noisy event, or the two would fight.
         crossfadePlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(youtubeAwareDataSourceFactory()))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -180,6 +191,13 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
+        // A playlist added/removed on the phone → refresh the YouTube tab on a connected car.
+        mainScope.launch {
+            YouTubePlaylists.playlists.drop(1).collect {
+                session.notifyChildrenChanged(TAB_YOUTUBE, Int.MAX_VALUE, null)
+            }
+        }
+
         // Reload the car slideshow whenever the library is (re)scanned. The onCreate load
         // above runs at service start, which races the phone's Images permission dialog and
         // usually loses (empty pool). The phone re-runs MusicLibrary.load() right after the
@@ -206,6 +224,30 @@ class PlaybackService : MediaLibraryService() {
         player.release()
         crossfadePlayer.release()
         super.onDestroy()
+    }
+
+    /**
+     * A data source factory that resolves our custom `yt://i/<videoId>` URIs to a real, short-lived
+     * googlevideo audio URL at read time (via [YouTubeBrowser.resolveStreamUrl]) and passes every
+     * other URI (local `content://` songs, `http` radio) straight through. Resolving lazily — each
+     * time playback of a YouTube item starts — is what keeps queued/persisted tracks playable long
+     * after their original stream URL would have expired. The resolve runs on ExoPlayer's own load
+     * thread, so its blocking network call is fine here.
+     */
+    private fun youtubeAwareDataSourceFactory(): ResolvingDataSource.Factory {
+        // The upstream handles everything real: local content:// songs, file://, and http(s) radio
+        // and (post-resolution) YouTube URLs.
+        val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+        val upstream = DefaultDataSource.Factory(this, http)
+        return ResolvingDataSource.Factory(upstream) { dataSpec ->
+            if (dataSpec.uri.scheme == "yt") {
+                val videoId = dataSpec.uri.lastPathSegment
+                val real = videoId?.let { YouTubeBrowser.resolveStreamUrl(it) }
+                if (real != null) dataSpec.withUri(Uri.parse(real)) else dataSpec
+            } else {
+                dataSpec
+            }
+        }
     }
 
     // ---- Crossfade ------------------------------------------------------------
@@ -236,11 +278,13 @@ class PlaybackService : MediaLibraryService() {
             return
         }
 
-        // Songs only. Radio is live (no real duration) and must not crossfade.
+        // Local songs only. Radio is live (no real duration); YouTube's tail can't be re-loaded
+        // into P2 without re-resolving a fresh remote stream and seeking into it. Both must not
+        // crossfade — the fade only ever runs between two local files.
         val current = player.currentMediaItem ?: return
-        if (current.mediaId.startsWith("radio:")) return
+        if (!current.mediaId.startsWith("song:")) return
         val nextIndex = player.nextMediaItemIndex
-        if (nextIndex == C.INDEX_UNSET || player.getMediaItemAt(nextIndex).mediaId.startsWith("radio:")) return
+        if (nextIndex == C.INDEX_UNSET || !player.getMediaItemAt(nextIndex).mediaId.startsWith("song:")) return
 
         val duration = player.duration
         if (duration == C.TIME_UNSET || duration <= 0) return
@@ -382,6 +426,9 @@ class PlaybackService : MediaLibraryService() {
             id.startsWith("radio:") ->
                 RadioBrowser.stationByMediaId(id, RadioFavorites.favorites.value)
                     ?.favicon?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            id.startsWith("yt:") ->
+                YouTubeBrowser.trackByMediaId(id)
+                    ?.thumbnailUrl?.let { runCatching { Uri.parse(it) }.getOrNull() }
             else -> null
         }
     }
@@ -475,10 +522,17 @@ class PlaybackService : MediaLibraryService() {
                     if (s != null) playableTextTile(mediaId, s.text, s.folderName) else null
                 }
                 mediaId == TAB_PLAYLISTS -> browsableItem(TAB_PLAYLISTS, "Playlists", null, styleExtras(true, true))
+                mediaId == TAB_YOUTUBE -> browsableItem(TAB_YOUTUBE, "YouTube", null, styleExtras(true, true))
                 mediaId == TAB_RADIO -> browsableItem(TAB_RADIO, "Radio", null, styleExtras(true, true))
                 mediaId.startsWith("song:") -> MusicLibrary.getTrackByMediaId(mediaId)?.let { songItem(it) }
                 mediaId.startsWith("radio:") ->
                     RadioBrowser.stationByMediaId(mediaId, RadioFavorites.favorites.value)?.let { radioItem(it) }
+                mediaId.startsWith("ytpl:") ->
+                    YouTubePlaylists.playlists.value.firstOrNull { it.mediaId == mediaId }
+                        ?.let { browsableItem(it.mediaId, it.title, null, styleExtras(true, false)) }
+                mediaId.startsWith("yt:") ->
+                    YouTubeBrowser.trackByMediaId(mediaId)?.let { youtubeItem(it) }
+                        ?: youtubeItemFromId(mediaId)
                 mediaId.startsWith("folder:") -> {
                     val fid = mediaId.removePrefix("folder:")
                     browsableItem(mediaId, fid.substringAfterLast('/'), null, styleExtras(true, false))
@@ -507,11 +561,14 @@ class PlaybackService : MediaLibraryService() {
                     // lastBrowsedParent pointing at a stale view and search hitting the wrong corpus.
                     mainScope.launch {
                         session.notifyChildrenChanged(TAB_PLAYLISTS, Int.MAX_VALUE, null)
+                        session.notifyChildrenChanged(TAB_YOUTUBE, Int.MAX_VALUE, null)
                         session.notifyChildrenChanged(TAB_RADIO, Int.MAX_VALUE, null)
                     }
                     rootTabs()
                 }
                 parentId == TAB_PLAYLISTS -> { lastBrowsedParent = TAB_PLAYLISTS; playlistsTabChildren() }
+                parentId == TAB_YOUTUBE -> { lastBrowsedParent = TAB_YOUTUBE; youtubeTabChildren() }
+                parentId.startsWith("ytpl:") -> { lastBrowsedParent = parentId; youtubePlaylistChildren(parentId) }
                 parentId == TAB_RADIO -> { lastBrowsedParent = TAB_RADIO; radioTabChildren() }
                 parentId.startsWith("folder:") -> {
                     lastBrowsedParent = parentId
@@ -595,6 +652,10 @@ class PlaybackService : MediaLibraryService() {
         return when {
             id.startsWith("song:") -> MusicLibrary.getTrackByMediaId(id)?.let { songItem(it) } ?: item
             id.startsWith("radio:") -> resolveRadioItem(item)
+            // A yt item's playback URI is fully derivable from its media id, so it's always
+            // reconstructable even when the track metadata isn't cached — prefer the cached
+            // metadata (real title/artist/thumb) but never drop to a URI-less, silent item.
+            id.startsWith("yt:") -> YouTubeBrowser.trackByMediaId(id)?.let { youtubeItem(it) } ?: youtubeItemFromId(id)
             else -> item
         }
     }
@@ -617,6 +678,7 @@ class PlaybackService : MediaLibraryService() {
      *  folder's song list instead). */
     private fun rootTabs(): List<MediaItem> = buildList {
         add(browsableItem(TAB_PLAYLISTS, "Playlists", null, styleExtras()))
+        add(browsableItem(TAB_YOUTUBE, "YouTube", null, styleExtras()))
         add(browsableItem(TAB_RADIO, "Radio", null, styleExtras()))
     }
 
@@ -628,6 +690,20 @@ class PlaybackService : MediaLibraryService() {
         MusicLibrary.browseFolders().map { folder ->
             browsableItem("folder:${folder.id}", folder.name, null, styleExtras())
         }
+
+    /** The YouTube tab: the user's saved playlists as browsable rows. Tapping one browses into its
+     *  track list ([youtubePlaylistChildren]). */
+    private fun youtubeTabChildren(): List<MediaItem> =
+        YouTubePlaylists.playlists.value.map { pl ->
+            browsableItem(pl.mediaId, pl.title, null, styleExtras())
+        }
+
+    /** A YouTube playlist's tracks (fetched via NewPipe, off the main thread — this runs on the
+     *  browse executor). Tapping a track plays the whole playlist starting at it. */
+    private fun youtubePlaylistChildren(playlistMediaId: String): List<MediaItem> {
+        val playlistId = playlistMediaId.removePrefix("ytpl:")
+        return YouTubeBrowser.playlistTracks(playlistId).map { youtubeItem(it) }
+    }
 
     /** The Radio tab: favorites, then recently played, then the top stations — a plain vertical
      *  list (the car template has no section headers; ordering conveys the grouping). */
@@ -687,6 +763,16 @@ class PlaybackService : MediaLibraryService() {
                 val queue = RadioBrowser.queueContaining(station, favs)
                 val start = queue.indexOfFirst { it.uuid == station.uuid }.coerceAtLeast(0)
                 queue.map { radioItem(it) } to start
+            }
+            // A tapped playlist tile → play the whole playlist from the top.
+            id.startsWith("ytpl:") ->
+                YouTubeBrowser.playlistTracks(id.removePrefix("ytpl:")).map { youtubeItem(it) } to 0
+            // A tapped track → queue it with the rest of its playlist, positioned at it.
+            id.startsWith("yt:") -> {
+                val videoId = id.removePrefix("yt:")
+                val queue = YouTubeBrowser.queueContaining(videoId)
+                if (queue.isEmpty()) listOf(resolvePlayableItem(items.first())) to 0
+                else queue.map { youtubeItem(it) } to queue.indexOfFirst { it.videoId == videoId }.coerceAtLeast(0)
             }
             else -> items to 0
         }
@@ -831,6 +917,40 @@ class PlaybackService : MediaLibraryService() {
             .build()
     }
 
+    private fun youtubeItem(track: YouTubeTrack): MediaItem {
+        val subtitle = listOfNotNull(track.artist, formatDuration(track.durationSec).ifBlank { null })
+            .joinToString(" · ")
+        val meta = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(subtitle.ifBlank { track.artist })
+            .setArtworkUri(track.thumbnailUrl?.let { runCatching { Uri.parse(it) }.getOrNull() })
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .build()
+        return MediaItem.Builder()
+            .setMediaId(track.mediaId)
+            .setUri(track.playbackUri)
+            .setMediaMetadata(meta)
+            .build()
+    }
+
+    /** Build a minimal-but-playable yt item from just its media id, for the case where the track's
+     *  metadata isn't cached (e.g. a queue restored after a process trim). The playback URI is
+     *  derived from the video id, so the ResolvingDataSource can still resolve a stream. */
+    private fun youtubeItemFromId(mediaId: String): MediaItem {
+        val videoId = mediaId.removePrefix("yt:")
+        val meta = MediaMetadata.Builder()
+            .setTitle("YouTube")
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .build()
+        return MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setUri("yt://i/$videoId")
+            .setMediaMetadata(meta)
+            .build()
+    }
+
     /**
      * The whole car app is a vertical list — no large grid tiles anywhere. Besides matching the
      * phone's list layout, list rows don't render the big broken-artwork "!" placeholder that
@@ -872,6 +992,7 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         const val ID_ROOT = "root"
         const val TAB_PLAYLISTS = "tab_playlists"
+        const val TAB_YOUTUBE = "tab_youtube"
         const val TAB_RADIO = "tab_radio"
         const val ID_SHUFFLE_ALL = "cmd:shuffle_all"
         const val CMD_SHORTCUT_PREFIX = "cmd:shortcut"

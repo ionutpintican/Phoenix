@@ -64,4 +64,10 @@ dependencies {
 
     // Radio-browser JSON is parsed with org.json (bundled in the platform, no dep needed).
     implementation("com.google.guava:guava:33.3.1-android")
+
+    // YouTube playlist + audio-stream extraction (the engine NewPipe/ViMusic use). Talks to
+    // YouTube's internal InnerTube API — no official API key, but see YouTubeBrowser for the
+    // ToS/fragility caveats. OkHttp backs its Downloader.
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.6")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

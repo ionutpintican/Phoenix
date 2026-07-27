@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -52,6 +53,7 @@ fun BrowseScreen(
     onOpenFolder: (String) -> Unit,
     onBackToRoot: () -> Unit,
     onOpenRadio: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onOpenNowPlaying: () -> Unit,
     onGoToFolder: (String) -> Unit,
     onOpenSearch: (Boolean) -> Unit,
@@ -101,6 +103,9 @@ fun BrowseScreen(
                         contentDescription = if (shuffle) "Shuffle on" else "Shuffle off",
                         tint = if (shuffle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     )
+                }
+                IconButton(onClick = onOpenYouTube) {
+                    Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = "YouTube playlists")
                 }
                 IconButton(onClick = { thread { MusicLibrary.rescan(context) } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
