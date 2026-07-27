@@ -48,6 +48,7 @@ fun RadioScreen(
     onOpenNowPlaying: () -> Unit,
     onBack: () -> Unit,
     onGoToFolder: (String) -> Unit,
+    onOpenYouTube: () -> Unit,
     onOpenSearch: (Boolean) -> Unit,
 ) {
     val revision by MusicLibrary.revision.collectAsState()
@@ -89,6 +90,8 @@ fun RadioScreen(
             LetterShortcutBar(
                 onGoToFolder = onGoToFolder,
                 showRadioButton = true,
+                showYouTubeButton = true,
+                onOpenYouTube = onOpenYouTube,
                 revision = revision,
             )
 

@@ -14,7 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,9 +47,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The phone YouTube screen: manage the saved playlists (add by URL / id, remove) and browse into
- * one to play its tracks. Playback goes through the same session as everything else, so the car's
- * YouTube tab and the now-playing bar stay in sync. Deliberately mirrors [RadioScreen]'s shape.
+ * The phone YouTube screen. The single text box does double duty: the **+** button adds it as a
+ * playlist (parsing a playlist link/id), the **🔍** button runs a plain YouTube video search on
+ * it. Below sits either the saved-playlist list or the current search results; tapping a playlist
+ * browses into its tracks. Everything plays through the same session, so the car's YouTube tab and
+ * the now-playing bar stay in sync. The car browse tree is unchanged.
  */
 @Composable
 fun YouTubeScreen(
@@ -57,10 +60,20 @@ fun YouTubeScreen(
     onBack: () -> Unit,
 ) {
     val playlists by YouTubePlaylists.playlists.collectAsState()
+    val scope = rememberCoroutineScope()
+
     var openPlaylist by remember { mutableStateOf<YouTubePlaylistRef?>(null) }
+    var input by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var searchResults by remember { mutableStateOf<List<YouTubeTrack>?>(null) }
+    var searching by remember { mutableStateOf(false) }
 
     BackHandler {
-        if (openPlaylist != null) openPlaylist = null else onBack()
+        when {
+            openPlaylist != null -> openPlaylist = null
+            searchResults != null -> searchResults = null
+            else -> onBack()
+        }
     }
 
     Scaffold(
@@ -68,80 +81,116 @@ fun YouTubeScreen(
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             val open = openPlaylist
-            if (open == null) {
-                PlaylistManager(playlists, onOpen = { openPlaylist = it })
-            } else {
-                PlaylistTracks(
-                    vm = vm,
-                    playlist = open,
-                    onOpenNowPlaying = onOpenNowPlaying,
+            if (open != null) {
+                PlaylistTracks(vm, open, onOpenNowPlaying)
+                return@Column
+            }
+
+            Text(
+                "YouTube",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+
+            // Shared box: + adds a playlist (link/id), magnifier searches YouTube for videos.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it; error = null },
+                    label = { Text("Playlist link, or search text") },
+                    singleLine = true,
+                    isError = error != null,
+                    modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = {
+                    val id = YouTubeBrowser.extractPlaylistId(input)
+                    when {
+                        id == null -> error = "Not a playlist link"
+                        YouTubePlaylists.contains(id) -> { error = "Already added"; input = "" }
+                        else -> {
+                            YouTubePlaylists.add(YouTubePlaylistRef(id, id))
+                            input = ""
+                            searchResults = null
+                            scope.launch {
+                                val title = withContext(Dispatchers.IO) { YouTubeBrowser.playlistTitle(id) }
+                                if (title != null) YouTubePlaylists.updateTitle(id, title)
+                                withContext(Dispatchers.IO) { YouTubeBrowser.playlistTracks(id) }
+                            }
+                        }
+                    }
+                }) {
+                    Icon(Icons.Filled.Add, contentDescription = "Add playlist")
+                }
+                IconButton(onClick = {
+                    val q = input.trim()
+                    if (q.isEmpty()) {
+                        error = "Enter search text"
+                    } else {
+                        error = null
+                        searching = true
+                        scope.launch {
+                            val res = withContext(Dispatchers.IO) { YouTubeBrowser.search(q) }
+                            searchResults = res
+                            searching = false
+                        }
+                    }
+                }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search YouTube")
+                }
+            }
+            error?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
+
+            if (searching) CircularProgressIndicator(Modifier.padding(16.dp))
+
+            val results = searchResults
+            if (results != null) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Search results",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { searchResults = null }) { Text("Clear") }
+                }
+                if (results.isEmpty() && !searching) {
+                    Text(
+                        "No results.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+                TrackList(results) { index ->
+                    vm.playYouTube(results, index)
+                    onOpenNowPlaying()
+                }
+            } else {
+                PlaylistList(playlists, onOpen = { openPlaylist = it })
             }
         }
     }
 }
 
-/** The playlist list plus the "add a playlist" input. */
+/** The saved-playlist list, each removable, tapping to browse its tracks. */
 @Composable
-private fun PlaylistManager(
+private fun PlaylistList(
     playlists: List<YouTubePlaylistRef>,
     onOpen: (YouTubePlaylistRef) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    var input by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    Text(
-        "YouTube playlists",
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-    )
-
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        OutlinedTextField(
-            value = input,
-            onValueChange = { input = it; error = null },
-            label = { Text("Playlist URL or id") },
-            singleLine = true,
-            isError = error != null,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(
-            onClick = {
-                val id = YouTubeBrowser.extractPlaylistId(input)
-                if (id == null) {
-                    error = "Not a playlist link"
-                } else if (YouTubePlaylists.contains(id)) {
-                    error = "Already added"
-                    input = ""
-                } else {
-                    // Add immediately with a placeholder title, then fetch the real name/tracks.
-                    YouTubePlaylists.add(YouTubePlaylistRef(id, id))
-                    input = ""
-                    scope.launch {
-                        val title = withContext(Dispatchers.IO) { YouTubeBrowser.playlistTitle(id) }
-                        if (title != null) YouTubePlaylists.updateTitle(id, title)
-                        // Warm the track cache so opening it is instant.
-                        withContext(Dispatchers.IO) { YouTubeBrowser.playlistTracks(id) }
-                    }
-                }
-            },
-        ) {
-            Icon(Icons.Filled.Add, contentDescription = "Add playlist")
-        }
-    }
-    error?.let {
-        Text(
-            it,
-            color = MaterialTheme.colorScheme.error,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
-    }
-
     LazyColumn(Modifier.fillMaxSize()) {
         items(playlists, key = { it.id }) { pl ->
             ListItem(
@@ -195,6 +244,15 @@ private fun PlaylistTracks(
         )
     }
 
+    TrackList(tracks) { index ->
+        vm.playYouTube(tracks, index)
+        onOpenNowPlaying()
+    }
+}
+
+/** Shared vertical list of YouTube tracks (playlist tracks or search hits). */
+@Composable
+private fun TrackList(tracks: List<YouTubeTrack>, onPlay: (Int) -> Unit) {
     LazyColumn(Modifier.fillMaxSize()) {
         itemsIndexed(tracks, key = { _, t -> t.videoId }) { index, track ->
             ListItem(
@@ -207,10 +265,7 @@ private fun PlaylistTracks(
                     if (subtitle.isNotBlank()) Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
                 leadingContent = { Icon(Icons.Filled.MusicNote, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth().clickableRow {
-                    vm.playYouTube(tracks, index)
-                    onOpenNowPlaying()
-                },
+                modifier = Modifier.fillMaxWidth().clickableRow { onPlay(index) },
             )
         }
     }

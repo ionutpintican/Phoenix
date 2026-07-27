@@ -121,6 +121,7 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
             onOpenNowPlaying = { screen = Screen.NowPlaying },
             onBack = { screen = Screen.Browse },
             onGoToFolder = goToFolder,
+            onOpenYouTube = { screen = Screen.YouTube },
             onOpenSearch = openSearch,
         )
         Screen.YouTube -> YouTubeScreen(
@@ -136,6 +137,7 @@ private fun PhoenixAppUi(vm: PlayerViewModel) {
                 MusicLibrary.folderIdByName(folderName)?.let { vm.playFolderShuffled(it) }
             },
             onOpenRadio = { screen = Screen.Radio },
+            onOpenYouTube = { screen = Screen.YouTube },
             onOpenSearch = openSearch,
         )
         Screen.Search -> SearchScreen(

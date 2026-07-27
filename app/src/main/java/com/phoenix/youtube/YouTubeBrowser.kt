@@ -1,6 +1,7 @@
 package com.phoenix.youtube
 
 import android.net.Uri
+import android.util.Log
 import org.schabi.newpipe.extractor.MediaFormat
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
@@ -31,6 +32,11 @@ object YouTubeBrowser {
 
     /** Safety cap so a pathological playlist can't page forever. */
     private const val MAX_TRACKS = 400
+
+    /** How many search hits to surface (first page only). */
+    private const val SEARCH_LIMIT = 30
+
+    private const val TAG = "YouTubeBrowser"
 
     @Volatile private var initialized = false
 
@@ -73,7 +79,35 @@ object YouTubeBrowser {
             playlistCache[playlistId] = result
             result.forEach { trackCache[it.videoId] = it }
             result
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "playlistTracks failed for $playlistId", e)
+            emptyList()
+        }
+    }
+
+    // ---- Search ---------------------------------------------------------------
+
+    /**
+     * Plain YouTube search (videos, not playlists), first page only. Non-stream hits (channels,
+     * playlists) are dropped, so the result is a flat, directly-playable track list. Results are
+     * cached by video id so a tapped result resolves its metadata during playback.
+     */
+    fun search(query: String): List<YouTubeTrack> {
+        val q = query.trim()
+        if (q.isBlank()) return emptyList()
+        return try {
+            ensureInit()
+            val yt = ServiceList.YouTube
+            val extractor = yt.getSearchExtractor(yt.searchQHFactory.fromQuery(q))
+            extractor.fetchPage()
+            val tracks = extractor.initialPage.items
+                .filterIsInstance<StreamInfoItem>()
+                .mapNotNull { toTrack(it) }
+                .take(SEARCH_LIMIT)
+            tracks.forEach { trackCache[it.videoId] = it }
+            tracks
+        } catch (e: Exception) {
+            Log.w(TAG, "search failed for '$q'", e)
             emptyList()
         }
     }
@@ -117,12 +151,19 @@ object YouTubeBrowser {
             ensureInit()
             val extractor = ServiceList.YouTube.getStreamExtractor(watchUrl(videoId))
             extractor.fetchPage()
-            val url = pickAudioStream(extractor.audioStreams)?.content ?: return null
+            val streams = extractor.audioStreams
+            val url = pickAudioStream(streams)?.content
+            if (url == null) {
+                Log.w(TAG, "resolveStreamUrl: no usable audio stream for $videoId (${streams?.size ?: 0} candidates)")
+                return null
+            }
+            Log.i(TAG, "resolveStreamUrl: $videoId -> ${url.take(80)}…")
             synchronized(streamUrlCache) {
                 streamUrlCache[videoId] = url to (now + STREAM_URL_TTL_MS)
             }
             url
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "resolveStreamUrl failed for $videoId", e)
             null
         }
     }

@@ -164,6 +164,13 @@ class PlaybackService : MediaLibraryService() {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (crossfading) crossfadePlayer.playWhenReady = isPlaying
             }
+
+            // Surface playback failures (esp. a YouTube stream that failed to resolve) instead of
+            // silently stalling — logcat tag "PlaybackService".
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val id = player.currentMediaItem?.mediaId
+                android.util.Log.w("PlaybackService", "Playback error on $id: ${error.errorCodeName}", error)
+            }
         })
 
         // Live Android Auto refresh when the sort changes on the phone: re-fetch every folder's

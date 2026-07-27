@@ -52,6 +52,7 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onGoToFolder: (String) -> Unit,
     onOpenRadio: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onOpenSearch: (Boolean) -> Unit,
 ) {
     BackHandler { onBack() }
@@ -81,6 +82,8 @@ fun NowPlayingScreen(
                 onGoToFolder = onGoToFolder,
                 showRadioButton = true,
                 onOpenRadio = onOpenRadio,
+                showYouTubeButton = true,
+                onOpenYouTube = onOpenYouTube,
                 revision = revision,
             )
 

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -33,6 +34,8 @@ fun LetterShortcutBar(
     modifier: Modifier = Modifier,
     showRadioButton: Boolean = false,
     onOpenRadio: () -> Unit = {},
+    showYouTubeButton: Boolean = false,
+    onOpenYouTube: () -> Unit = {},
     @Suppress("UNUSED_PARAMETER") revision: Int = 0,
 ) {
     val shortcuts by Settings.shortcuts.collectAsState()
@@ -57,6 +60,12 @@ fun LetterShortcutBar(
                     icon != null -> Icon(icon, contentDescription = shortcut.folderName)
                     else -> Text(shortcut.folderName.take(1).uppercase())
                 }
+            }
+        }
+        // YouTube sits just before Radio, mirroring how Radio is offered across the phone screens.
+        if (showYouTubeButton) {
+            FilledTonalButton(onClick = onOpenYouTube) {
+                Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = "YouTube playlists")
             }
         }
         if (showRadioButton) {
