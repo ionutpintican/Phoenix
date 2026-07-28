@@ -70,3 +70,18 @@ Versioning is **git plus frontmatter** — no extra tooling.
 
 Every spec lists the **source files** that implement it in frontmatter. When you move or
 rename code, update the affected specs' `source` lists in the same commit.
+
+## Reading this in Obsidian
+
+This `specs/` folder doubles as an [Obsidian](https://obsidian.md) vault — **open this
+folder directly** (Vault switcher → *Open folder as vault* → select `specs`). Do **not**
+create a separate vault elsewhere, or the `INDEX.md` links won't find the spec files.
+
+Links use plain **markdown relative links** (`[text](001-.../spec.md)`) rather than Obsidian
+`[[wikilinks]]`, so the same links work both in Obsidian and on GitHub. From
+[`INDEX.md`](INDEX.md) you can click through to every spec; Obsidian's graph and backlinks
+also pick these up.
+
+Obsidian's per-vault config (`.obsidian/`) is git-ignored, so your local theme/layout stays
+out of version control. Remove that line from the repo `.gitignore` if you'd rather share
+vault settings across machines.

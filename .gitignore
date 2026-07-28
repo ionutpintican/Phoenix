@@ -13,3 +13,7 @@ app/build/
 
 # Internal PRD / design doc — not for the public repo
 /Reconstruct Phoenix then compare with PRD file.docx
+
+# Obsidian vault config (the specs/ folder doubles as an Obsidian vault).
+# Local workspace/theme state — not versioned. Delete this line to share vault settings.
+.obsidian/
