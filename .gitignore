@@ -17,3 +17,7 @@ app/build/
 # Obsidian vault config (the specs/ folder doubles as an Obsidian vault).
 # Local workspace/theme state — not versioned. Delete this line to share vault settings.
 .obsidian/
+
+# Graphify tooling: locally-provisioned CLI + Kotlin grammar (see scripts/graphify/).
+# Regenerated on demand; never committed. The graph itself lives in .graphify/.
+.graphify-tools/

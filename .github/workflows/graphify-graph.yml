@@ -1,0 +1,56 @@
+name: Graphify knowledge graph
+
+# Rebuilds the code knowledge graph in .graphify/ on every push that touches
+# source (not graph-only commits) and commits the refreshed graph back to the
+# same branch. The rebuild is deterministic and offline (AST only, no API key):
+# community names are preserved and descriptions for unchanged symbols are
+# carried forward by scripts/graphify/rebuild.sh.
+#
+# Requires: repository Actions permission "Read and write" (or the job-level
+# `permissions: contents: write` below is honored). Pushes made with the default
+# GITHUB_TOKEN do not re-trigger workflows, and `paths-ignore` + the skip guard
+# below are additional safety against loops.
+
+on:
+  push:
+    paths-ignore:
+      - '.graphify/**'
+      - '.graphify-tools/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: graphify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: ${{ !contains(github.event.head_commit.message, '[graphify skip]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rebuild knowledge graph
+        run: ./scripts/graphify/rebuild.sh
+        env:
+          GRAPHIFY_SCOPE: tracked
+
+      - name: Commit refreshed graph
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .graphify
+          if git diff --cached --quiet; then
+            echo "Knowledge graph already up to date; nothing to commit."
+          else
+            git commit -m "chore(graphify): refresh knowledge graph [graphify skip]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
