@@ -1,0 +1,198 @@
+{
+  "app/build.gradle.kts": {
+    "mtime": 1787916198960.6643,
+    "hash": "fde3e7b59de7cbd251ddd8a708822e52"
+  },
+  "app/src/main/java/com/phoenix/MainActivity.kt": {
+    "mtime": 1787916198968.3386,
+    "hash": "7739aa3fd1f0440c605b1d306a77ce56"
+  },
+  "app/src/main/java/com/phoenix/PhoenixApp.kt": {
+    "mtime": 1787916198968.8464,
+    "hash": "fe17889141342dbbe869368f89dbc06f"
+  },
+  "app/src/main/java/com/phoenix/playback/GallerySlideshow.kt": {
+    "mtime": 1787916198968.8464,
+    "hash": "38c3b46dc5f2e567826af5483d713575"
+  },
+  "app/src/main/java/com/phoenix/playback/MusicLibrary.kt": {
+    "mtime": 1787916198969.3066,
+    "hash": "f9487d0e6e192a80a89a2ba82d963e31"
+  },
+  "app/src/main/java/com/phoenix/playback/PlaybackService.kt": {
+    "mtime": 1787916198969.3066,
+    "hash": "2ea657557f16056123b4c5c67ce6a4eb"
+  },
+  "app/src/main/java/com/phoenix/playback/PlayerViewModel.kt": {
+    "mtime": 1787916198969.3066,
+    "hash": "fa36db9608ae87c438c0fe141ea829f5"
+  },
+  "app/src/main/java/com/phoenix/playback/Track.kt": {
+    "mtime": 1787916198969.3066,
+    "hash": "c3b49a6c5145f988d40dadd5b6b5f48c"
+  },
+  "app/src/main/java/com/phoenix/radio/RadioBrowser.kt": {
+    "mtime": 1787916198969.3066,
+    "hash": "b960e5f8e549efb116d154302416265b"
+  },
+  "app/src/main/java/com/phoenix/radio/RadioFavorites.kt": {
+    "mtime": 1787916198971.3486,
+    "hash": "01fc3acccca04297fd2ab4de020b5cd6"
+  },
+  "app/src/main/java/com/phoenix/radio/RadioRecents.kt": {
+    "mtime": 1787916198971.3486,
+    "hash": "988ccd347a99d3cf8dff62eb238ed387"
+  },
+  "app/src/main/java/com/phoenix/radio/RadioStation.kt": {
+    "mtime": 1787916198971.3486,
+    "hash": "af4fa18a93b1a3af7eedd86fc7e9e911"
+  },
+  "app/src/main/java/com/phoenix/settings/Settings.kt": {
+    "mtime": 1787916198971.3486,
+    "hash": "2948516ae08d459714c51d1b28e56714"
+  },
+  "app/src/main/java/com/phoenix/settings/ShortcutIcons.kt": {
+    "mtime": 1787916198972.6392,
+    "hash": "9a8dc799796789ece72511da365d61ca"
+  },
+  "app/src/main/java/com/phoenix/ui/Artwork.kt": {
+    "mtime": 1787916198972.6392,
+    "hash": "86524e4da6ea58ff455f6f0040833f2f"
+  },
+  "app/src/main/java/com/phoenix/ui/BrowseNav.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "826cc3faee8b9794e9b23b24b81f5e8c"
+  },
+  "app/src/main/java/com/phoenix/ui/BrowseScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "32e04958abb4103dffda608b94302ee8"
+  },
+  "app/src/main/java/com/phoenix/ui/NowPlayingScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "5198ba5891c513baa3728d73dcc5b6f8"
+  },
+  "app/src/main/java/com/phoenix/ui/RadioScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "c5db3aa0c0b5735dfb8a0881e7b7f63d"
+  },
+  "app/src/main/java/com/phoenix/ui/SearchScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "4c0415607fcd612b1c267018ae376322"
+  },
+  "app/src/main/java/com/phoenix/ui/SettingsScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "81fee63205691bdf1f78fc801fd593f9"
+  },
+  "app/src/main/java/com/phoenix/ui/UiExt.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "5d7f4aa898a496da14016b642b5b98d2"
+  },
+  "app/src/main/java/com/phoenix/ui/YouTubeScreen.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "ab6cc156f1abb0b98157436ab7971f64"
+  },
+  "app/src/main/java/com/phoenix/ui/theme/Theme.kt": {
+    "mtime": 1787916198973.4465,
+    "hash": "16e543b51e815d8dc1a0461680acbeb4"
+  },
+  "app/src/main/java/com/phoenix/ui/theme/Type.kt": {
+    "mtime": 1787916198976.0457,
+    "hash": "097e8a84e4b1c62eb9100193a832503a"
+  },
+  "app/src/main/java/com/phoenix/youtube/YouTubeBrowser.kt": {
+    "mtime": 1787916198976.0457,
+    "hash": "368690f7d6967609f78d6a5892e75618"
+  },
+  "app/src/main/java/com/phoenix/youtube/YouTubeDownloader.kt": {
+    "mtime": 1787916198976.4714,
+    "hash": "864c433796886b43663e21069ead3d63"
+  },
+  "app/src/main/java/com/phoenix/youtube/YouTubePlaylists.kt": {
+    "mtime": 1787916198976.4714,
+    "hash": "d6c21fa620bbd724e4f77000189f116e"
+  },
+  "app/src/main/java/com/phoenix/youtube/YouTubeTrack.kt": {
+    "mtime": 1787916198976.4714,
+    "hash": "a34d123137259019d3f316e4c5afbd6a"
+  },
+  "build-and-install.ps1": {
+    "mtime": 1787916198986.7754,
+    "hash": "c2582cc1f6d4b155ab3f30009d66d276"
+  },
+  "build.gradle.kts": {
+    "mtime": 1787916198986.7754,
+    "hash": "089555cf36ec56ab001b3eccdf83cfaf"
+  },
+  "gradlew": {
+    "mtime": 1787916198990.0017,
+    "hash": "866d9dd2201a6898f71b1ec5b9596d31"
+  },
+  "settings.gradle.kts": {
+    "mtime": 1787916198990.0017,
+    "hash": "2215bc610726e2dbcb6683517bb8bf32"
+  },
+  "BUILD.md": {
+    "mtime": 1787916198960.6643,
+    "hash": "9b24c4f6e642646228515d8d2d0b0d54"
+  },
+  "README.md": {
+    "mtime": 1787916198960.6643,
+    "hash": "af49c4c9819da6359da268e715a98fbd"
+  },
+  "specs/001-local-music-library/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "4aaaa138522dc80f7380858341efce64"
+  },
+  "specs/002-playback-engine/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "12fad7c55bc4df737b5bc84e571fbe09"
+  },
+  "specs/003-gapless-crossfade/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "0e77d7c252639bd0e9a3e7a57cba4475"
+  },
+  "specs/004-android-auto/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "6897c99b308bb9834c407fb472804e5e"
+  },
+  "specs/005-internet-radio/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "a6953f2e7fb91df4cb6f442a5e3a9b70"
+  },
+  "specs/006-youtube/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "b639346b00e783ad8c82afe6c2910e5c"
+  },
+  "specs/007-phone-app-shell/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "aa8ca6577ff209c7551b2237e5640f8f"
+  },
+  "specs/008-now-playing/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "25021823e1f1d66e9a65a6a0a8e4b57c"
+  },
+  "specs/009-search/spec.md": {
+    "mtime": 1787916198990.658,
+    "hash": "2b7776211cd146d5858baecb473892a8"
+  },
+  "specs/010-shortcuts-and-settings/spec.md": {
+    "mtime": 1787916198992.6643,
+    "hash": "cfde5839021caeda026be1af36a45ca8"
+  },
+  "specs/011-platform-integration/spec.md": {
+    "mtime": 1787916198992.6643,
+    "hash": "cb85fb1de95c3f04fdd12a4c7b1ed72d"
+  },
+  "specs/INDEX.md": {
+    "mtime": 1787916198992.6643,
+    "hash": "c7cfec4e01c8e20b6736be9bda6cbaa0"
+  },
+  "specs/README.md": {
+    "mtime": 1787916198992.6643,
+    "hash": "cb27eb9c3432c4f58fd1fae54409b3fc"
+  },
+  "specs/constitution.md": {
+    "mtime": 1787916198992.6643,
+    "hash": "117af678b2ef32120c4cffe47cb6d033"
+  }
+}

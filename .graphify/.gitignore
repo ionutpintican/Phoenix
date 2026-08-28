@@ -1,0 +1,16 @@
+# Graphify local lifecycle / transient state — never commit these.
+# Commit-safe artifacts (graph.json, GRAPH_REPORT.md, manifest.json,
+# scope.json, studio/) are tracked normally.
+
+cache/
+needs_update
+branch.json
+worktree.json
+.graphify_*
+*-instructions/
+scratch/
+memory/
+image-dataprep/
+
+# Dated curated-graph backups created by `graphify hook-rebuild`.
+20??-??-??/
